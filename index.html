@@ -1125,6 +1125,200 @@ function longestUniformRun(peaks, tolerance) {
 }
 
 /* Locate the grid. Returns deskewed-space row rules and column rules. */
+/* ---------- PERSPECTIVE ---------------------------------------------------
+   A tech standing over the bench photographs the sheet at an angle, which
+   keystones it: the rows are no longer parallel and their spacing shrinks down
+   the page. No amount of rotation fixes that, and it is why every angled photo
+   failed. Find the four corners of the paper and warp it flat first.
+   -------------------------------------------------------------------------- */
+
+/* Largest connected bright blob — the sheet of paper against the bench. */
+function largestBrightRegion(gray, w, h, thresh) {
+  const t = thresh === undefined ? 0.55 : thresh;
+  const seen = new Uint8Array(w * h);
+  const queue = new Int32Array(w * h);
+  let best = null, bestSize = 0;
+  for (let start = 0; start < w * h; start++) {
+    if (seen[start] || gray[start] <= t) continue;
+    let head = 0, tail = 0, size = 0;
+    queue[tail++] = start;
+    seen[start] = 1;
+    const members = [];
+    while (head < tail) {
+      const p = queue[head++];
+      members.push(p);
+      size++;
+      const x = p % w, y = (p / w) | 0;
+      if (x > 0 && !seen[p - 1] && gray[p - 1] > t) { seen[p - 1] = 1; queue[tail++] = p - 1; }
+      if (x < w - 1 && !seen[p + 1] && gray[p + 1] > t) { seen[p + 1] = 1; queue[tail++] = p + 1; }
+      if (y > 0 && !seen[p - w] && gray[p - w] > t) { seen[p - w] = 1; queue[tail++] = p - w; }
+      if (y < h - 1 && !seen[p + w] && gray[p + w] > t) { seen[p + w] = 1; queue[tail++] = p + w; }
+    }
+    if (size > bestSize) { bestSize = size; best = members; }
+  }
+  const mask = new Uint8Array(w * h);
+  if (best) best.forEach((p) => { mask[p] = 1; });
+  return { mask: mask, size: bestSize };
+}
+
+/* Corners of a convex-ish blob: the extremes of x+y and x-y pick out the four
+   corners of a rotated rectangle without needing contour tracing. */
+function pageQuad(mask, w, h) {
+  let tl = -1, br = -1, tr = -1, bl = -1;
+  let minSum = Infinity, maxSum = -Infinity, minDiff = Infinity, maxDiff = -Infinity;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!mask[y * w + x]) continue;
+      const sum = x + y, diff = x - y;
+      if (sum < minSum) { minSum = sum; tl = y * w + x; }
+      if (sum > maxSum) { maxSum = sum; br = y * w + x; }
+      if (diff > maxDiff) { maxDiff = diff; tr = y * w + x; }
+      if (diff < minDiff) { minDiff = diff; bl = y * w + x; }
+    }
+  }
+  if (tl < 0) return null;
+  const pt = (p) => ({ x: p % w, y: (p / w) | 0 });
+  return [pt(tl), pt(tr), pt(br), pt(bl)]; // clockwise from top-left
+}
+
+/* Solve the 3x3 homography taking the four `from` points to the four `to`
+   points. Straight Gaussian elimination on the 8x8 system; h33 is fixed at 1. */
+function solveHomography(from, to) {
+  const A = [], b = [];
+  for (let i = 0; i < 4; i++) {
+    const { x, y } = from[i];
+    const { x: u, y: v } = to[i];
+    A.push([x, y, 1, 0, 0, 0, -u * x, -u * y]); b.push(u);
+    A.push([0, 0, 0, x, y, 1, -v * x, -v * y]); b.push(v);
+  }
+  for (let col = 0; col < 8; col++) {
+    let pivot = col;
+    for (let r = col + 1; r < 8; r++) if (Math.abs(A[r][col]) > Math.abs(A[pivot][col])) pivot = r;
+    if (Math.abs(A[pivot][col]) < 1e-9) return null;
+    const tmpA = A[col]; A[col] = A[pivot]; A[pivot] = tmpA;
+    const tmpB = b[col]; b[col] = b[pivot]; b[pivot] = tmpB;
+    for (let r = 0; r < 8; r++) {
+      if (r === col) continue;
+      const f = A[r][col] / A[col][col];
+      if (!f) continue;
+      for (let c = col; c < 8; c++) A[r][c] -= f * A[col][c];
+      b[r] -= f * b[col];
+    }
+  }
+  const hh = b.map((v, i) => v / A[i][i]);
+  return [hh[0], hh[1], hh[2], hh[3], hh[4], hh[5], hh[6], hh[7], 1];
+}
+
+function applyH(H, x, y) {
+  const d = H[6] * x + H[7] * y + H[8];
+  return { x: (H[0] * x + H[1] * y + H[2]) / d, y: (H[3] * x + H[4] * y + H[5]) / d };
+}
+
+function dist(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+/* Otsu's threshold — the brightness that best separates the picture into two
+   classes. The bench is a mid-grey with scratches and the paper is near-white,
+   so a fixed cut-off catches a lit patch of steel on one photo and loses a
+   shadowed corner of paper on the next. */
+function otsuThreshold(gray) {
+  const bins = 256;
+  const hist = new Float64Array(bins);
+  for (let i = 0; i < gray.length; i++) {
+    hist[Math.max(0, Math.min(bins - 1, Math.round(gray[i] * (bins - 1))))]++;
+  }
+  let total = gray.length, sum = 0;
+  for (let i = 0; i < bins; i++) sum += i * hist[i];
+  let sumB = 0, wB = 0, best = 0, bestVar = -1;
+  for (let i = 0; i < bins; i++) {
+    wB += hist[i];
+    if (!wB) continue;
+    const wF = total - wB;
+    if (!wF) break;
+    sumB += i * hist[i];
+    const mB = sumB / wB, mF = (sum - sumB) / wF;
+    const between = wB * wF * (mB - mF) * (mB - mF);
+    if (between > bestVar) { bestVar = between; best = i; }
+  }
+  return best / (bins - 1);
+}
+
+/* Area of the quad, by the shoelace formula. */
+function quadArea(q) {
+  let a = 0;
+  for (let i = 0; i < q.length; i++) {
+    const p = q[i], n = q[(i + 1) % q.length];
+    a += p.x * n.y - n.x * p.y;
+  }
+  return Math.abs(a) / 2;
+}
+
+/* Warp the detected page to a flat rectangle.
+
+   The output aspect is forced to US Letter rather than measured from the quad.
+   We know what size the paper is, and a measured aspect inherits every error in
+   the corner detection — which is how a page came out at 1.00 when letter is
+   1.294. */
+function rectifyPage(gray, w, h, maxDim) {
+  // Find the page on a blurred copy. The printed rules are thin and dark, and on
+  // a photo where the sheet fills the frame they carve the bright blob into
+  // fragments and drag Otsu's split down to paper-versus-ink instead of
+  // paper-versus-bench. A little blur makes the paper one solid shape again.
+  const smooth = boxBlur(gray, w, h, Math.max(2, Math.round(Math.min(w, h) / 200)));
+  const otsu = otsuThreshold(smooth);
+  let quad = null, bestFill = 0;
+
+  // Try a few cut-offs around Otsu and keep the one whose blob best fills its
+  // own quadrilateral. Paper is convex and fills its corners; paper-plus-a-patch
+  // -of-bench does not, which is exactly the failure this rejects.
+  for (const t of [otsu, otsu + 0.04, otsu + 0.08, otsu - 0.04]) {
+    if (t <= 0.15 || t >= 0.95) continue;
+    const region = largestBrightRegion(smooth, w, h, t);
+    if (region.size < w * h * 0.06) continue;
+    const q = pageQuad(region.mask, w, h);
+    if (!q) continue;
+    const area = quadArea(q);
+    if (area < w * h * 0.05) continue;
+    const fill = region.size / area;
+    if (fill > bestFill) { bestFill = fill; quad = q; }
+  }
+  // Below about 0.80 the blob is not a rectangle and the corners mean nothing.
+  if (!quad || bestFill < 0.72) return null;
+
+  const [tl, tr, br, bl] = quad;
+  const wide = (dist(tl, tr) + dist(bl, br)) / 2;
+  const tall = (dist(tl, bl) + dist(tr, br)) / 2;
+  if (wide < 40 || tall < 40) return null;
+
+  const LETTER = 11 / 8.5;
+  const cap = maxDim || 1400;
+  const landscape = wide >= tall;
+  const outW = Math.round(landscape ? cap : cap / LETTER);
+  const outH = Math.round(landscape ? cap / LETTER : cap);
+
+  // Solve the map from output space back to the photo, so every output pixel
+  // samples one source point — no holes.
+  const H = solveHomography(
+    [{ x: 0, y: 0 }, { x: outW - 1, y: 0 }, { x: outW - 1, y: outH - 1 }, { x: 0, y: outH - 1 }],
+    quad);
+  if (!H) return null;
+
+  const out = new Float32Array(outW * outH);
+  for (let y = 0; y < outH; y++) {
+    for (let x = 0; x < outW; x++) {
+      const s = applyH(H, x, y);
+      const x0 = Math.floor(s.x), y0 = Math.floor(s.y);
+      if (x0 < 0 || y0 < 0 || x0 + 1 >= w || y0 + 1 >= h) { out[y * outW + x] = 1; continue; }
+      const fx = s.x - x0, fy = s.y - y0;
+      out[y * outW + x] =
+        gray[y0 * w + x0] * (1 - fx) * (1 - fy) + gray[y0 * w + x0 + 1] * fx * (1 - fy) +
+        gray[(y0 + 1) * w + x0] * (1 - fx) * fy + gray[(y0 + 1) * w + x0 + 1] * fx * fy;
+    }
+  }
+  return { gray: out, w: outW, h: outH, quad: quad, fill: bestFill };
+}
+
 /* Exact quarter turns — no interpolation, so trying all four orientations costs
    nothing in image quality. k is the number of clockwise turns. */
 function rotate90(gray, w, h, k) {
@@ -1269,17 +1463,24 @@ function orientationScore(grid) {
    Tries all four quarter turns, because techs photograph the sheet whichever
    way it happens to be lying on the bench. */
 function segmentSheet(rgba, w, h, sampleIndex) {
-  const gray0 = toGrayscale(rgba, w, h);
+  const raw = toGrayscale(rgba, w, h);
+  // Flatten the keystone first. If the page cannot be found, fall back to the
+  // photo as-is — a flat, square-on shot needs no warp anyway.
+  const flat = rectifyPage(raw, w, h);
+  const gray0 = flat ? flat.gray : raw;
+  const gw = flat ? flat.w : w;
+  const gh = flat ? flat.h : h;
   let best = null;
 
   for (let turn = 0; turn < 4; turn++) {
-    const r = rotate90(gray0, w, h, turn);
+    const r = rotate90(gray0, gw, gh, turn);
     const grid = findSheetGrid(r.gray, r.w, r.h);
     const found = gramsColumnCells(grid, sampleIndex || 0, CONFIG.sieves);
     const cand = {
       ok: found.ok,
       reason: found.reason || "",
       turn: turn,
+      rectified: !!flat,
       skewDeg: grid.skew * 180 / Math.PI,
       grid: grid,
       cells: found.cells,
