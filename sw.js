@@ -1,5 +1,5 @@
 // BUMP THIS on every deploy or phones will keep serving the old app.
-const CACHE = "kytc-gradation-v6";
+const CACHE = "kytc-gradation-v7";
 const ASSETS = ["./", "./index.html", "./model.js", "./manifest.json",
   "./icon-192.png", "./icon-512.png"];
 

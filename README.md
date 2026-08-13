@@ -64,42 +64,23 @@ local reader cannot do well, and typing beats correcting bad OCR.
 
 ## Reading the photo — where that stands
 
-The goal is: photograph the sheet, the values arrive filled in, you glance and confirm, you get
-a PDF. No typing. Four of the five pieces are built and tested. One is blocked.
+Photograph the sheet, press **Generate**, and whatever the reader makes out is imported with
+every doubtful cell coloured for review. The maths runs immediately; TOTAL doubles as the
+divisor. The status line says plainly how much to trust the import.
 
-| Piece | State |
-|---|---|
-| **Digit classifier** | **Done.** 8,778-parameter conv net, MNIST + heavy augmentation. 98.7% on clean test digits, 95.2% on augmented ones. Ships as `model.js` (46 KB) inside the app — no ONNX, no CDN, no fetch. |
-| **Inference in the browser** | **Done.** Hand-written JS forward pass. A test replays 40 held-out digits through both Python and JS and fails if any logit disagrees by more than 2e-3. |
-| **Glyph normalisation** | **Done.** `prepareGlyph` crops to the ink, scales the long side to 20px, and centres by centre of mass — the MNIST convention. Skipping this is the usual reason an MNIST net collapses on real input. |
-| **Constraint solver** | **Done.** `cellCandidates` beams over the top digits per position; `solveCumulative` picks the combination that keeps the cumulative weights increasing. A leading digit misread so the row goes backwards gets repaired from the runner-up, and the cell is flagged as repaired. |
-| **Finding the cells in a photo** | **In progress — 2 of 20 photos.** See below. |
+Honest accuracy, measured by `npm run read` against 15 real photos with known values
+(this drives the same `readSheet` the Generate button calls):
 
-### Where segmentation stands
+| stage | exact cells | digits right |
+|---|---|---|
+| first wired end to end | 0/165 | 6/752 |
+| extraction fixed (rules removed by run length, lines clustered, sheet offset) | 1/165 | 28/752 |
+| classifier fine-tuned on 138 harvested glyphs of this lab's writing | **5/165** | **89/752** |
 
-20 real photos live in `test/fixtures/photos` — every orientation, several angles, glare, and
-one low-resolution screenshot. `npm run seg` scores the segmenter against all of them.
-
-**Currently 2 of 20.** It finds the page, corrects skew, tries all four quarter turns, and uses
-the wide SPECIFICATION column to tell upright from upside-down. What it cannot yet do reliably
-is string together all 16 row rules and all 10 column rules on a sheet photographed at an angle:
-the detector finds 18-33 candidate rules but the uniform-pitch filter only chains 5-12 of them,
-because perspective makes the row spacing change down the page faster than the tolerance allows.
-
-The honest read is that rotation and skew correction are not enough — this needs explicit
-detection of the page quadrilateral and a proper perspective warp, so the table is square before
-any line finding happens. That is the next piece of work.
-
-**It refuses rather than guesses.** Every one of the 18 failures returns `ok:false` with a
-reason. A misplaced cell would produce confident nonsense in the grams column that the downstream
-arithmetic cannot distinguish from an odd sheet.
-
-### What to expect when it works
-
-The classifier's honest starting accuracy on real handwriting is the handoff's own estimate:
-85–90% per digit. The constraint solver lifts that a long way at the row level — the sheet's
-arithmetic pins most misreads — but it will not be perfect on day one. That is what the review
-screen is for, and why every value carries where it came from:
+On a square-on, frame-filling photo the best sheets now read about half their digits
+correctly, with several values exact. That is not yet a tool — it is a trajectory. The
+classifier holds 98.6% on MNIST but only ~64% on this lab's pencil even after fine-tuning
+on 138 samples; more labelled sheets are the lever. Every value carries where it came from:
 
 - **unmarked** — you typed it
 - **yellow** — read, but the classifier was unsure
@@ -107,9 +88,16 @@ screen is for, and why every value carries where it came from:
 - **red** — read, and nothing could reconcile it
 - **green** — you corrected it
 
-Every correction is logged (`recordCorrection`) as a labelled sample in your own techs' writing.
-After 30–50 sheets that becomes a fine-tuning set, and accuracy climbs fast because this is a
-tiny closed domain: one form, a few pens, a few people.
+### The retraining loop
+
+1. Add photos of completed sheets to `test/fixtures/photos/`
+2. Add their true values to the tables in `tools/eval-reading.mjs` and `tools/harvest-digits.mjs`
+3. `npm run harvest` — relabels digit glyphs from the corpus
+4. `python3 tools/train_digits.py --real test/fixtures/real-digits.json` — retrains (~20 min, CPU)
+5. `npm run read` — did it get better? Ship `model.js` only if yes.
+
+Corrections made on the review screen are also logged on-device (`recordCorrection`) and
+become harvestable the same way.
 
 ### Still not built
 
