@@ -214,7 +214,7 @@
       <span class="ico">&#128247;</span>
       <span id="photoBtnText">Photograph the Worksheet</span>
     </button>
-    <button class="btn go hidden" id="readBtn">Read the weights from the photo</button>
+    <button class="btn go hidden" id="readBtn">Generate &mdash; fill the sheet from the photo</button>
     <label class="btn ghost" for="photoInput">Use the phone camera app instead</label>
     <input type="file" id="photoInput" accept="image/*" capture="environment">
     <label class="btn ghost" for="galleryInput">Choose an existing photo</label>
@@ -1885,8 +1885,27 @@ function readSheet(rgba, w, h, sampleIndex) {
     if (cell.skip) return { key: cell.key, text: "", confidence: 0, skip: true };
     const read = readCell(g, gw, gh, cell, layers);
     return { key: cell.key, text: read.text, confidence: read.confidence,
-      digitCount: read.digits.length };
+      digits: read.digits, digitCount: read.digits.length };
   });
+
+  // Let the sheet's own arithmetic repair misreads before anyone sees them.
+  // Beam the top candidate digits per cell, then pick the combination that
+  // keeps the cumulative column increasing — PAN and TOTAL continue the same
+  // non-decreasing chain, so they join it.
+  const chain = results.filter((r) => !r.skip && r.digits && r.digits.length);
+  if (chain.length >= 2) {
+    const solved = solveCumulative(chain.map((r) => ({
+      key: r.key,
+      candidates: cellCandidates(r.digits.map((d) => d.probs)),
+    })));
+    solved.picks.forEach((p) => {
+      const r = results.find((x) => x.key === p.key);
+      if (!r || !p.pick) return;
+      r.text = p.pick.text;
+      r.repaired = p.repaired;
+      r.unsolved = p.unsolved;
+    });
+  }
 
   return { ok: true, results: results, cells: cells, turn: turn,
     snapped: snap.snapped, gray: g, w: gw, h: gh };
@@ -3039,19 +3058,10 @@ async function onRead() {
       return;
     }
 
-    // Refuse a reading the sheet's own arithmetic rejects. A wrong grams column
-    // is worse than a blank one: the tech has to check every cell against the
-    // photo anyway, which is slower than typing it. The bar is deliberately
-    // high — legible in most rows, increasing down the sheet, and a TOTAL that
-    // is the largest value on it.
-    const proposed = out.results.filter((r) => !r.skip && r.text);
+    // Import whatever was read — the tech asked for the numbers on screen, not
+    // for a refusal. Everything doubtful is coloured for review, and the
+    // trustworthiness verdict decides the wording, not whether to fill in.
     const verdict = readingIsTrustworthy(out.results);
-    if (!verdict.ok) {
-      setStatus("photoStatus", "Read it, but the numbers do not hold together (" +
-        verdict.reason + "). Not filling them in — key them by hand.", "err");
-      return;
-    }
-
     const applied = applyRecognition(state.active, out.results.filter((r) => !r.skip));
     // TOTAL doubles as the divisor: it equals the After Wash Dry Wt. on every
     // sheet, so reading the one column is enough to compute the percentages.
@@ -3068,10 +3078,17 @@ async function onRead() {
     persist();
     renderAll();
     const sum = recognitionSummary(state.active);
-    setStatus("photoStatus", applied
-      ? `Read ${sum.total} rows — check the highlighted ones against the photo.`
-      : "Nothing legible in the grams column. Key the values in by hand.",
-      applied ? "ok" : "err");
+    if (!applied) {
+      setStatus("photoStatus", "Nothing legible in the grams column. Key the values in by hand.", "err");
+    } else if (verdict.ok && !sum.needsLook) {
+      setStatus("photoStatus", `Imported ${sum.total} rows and the maths agrees. Glance and confirm.`, "ok");
+    } else if (verdict.ok) {
+      setStatus("photoStatus",
+        `Imported ${sum.total} rows — ${sum.needsLook} highlighted for a second look.`, "ok");
+    } else {
+      setStatus("photoStatus", `Imported ${sum.total} rows, but ${verdict.reason} — ` +
+        `treat every highlighted cell as suspect and fix it against the photo.`, "err");
+    }
   } catch (err) {
     setStatus("photoStatus", "Could not read the photo: " + err.message, "err");
   } finally {
