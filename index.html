@@ -377,6 +377,22 @@ const CONFIG = {
   // regardless of how confident the reader was.
   ocrConfirmBelow: 0.90,
 
+  // ---- WHERE THE CELLS ARE ON A FLATTENED PAGE ---------------------------
+  // Once rectifyPage has warped the photo to a square US Letter rectangle, the
+  // form is a fixed template and every cell is at a known fraction of the page.
+  // Measured off a rectified sheet against a percentage grid; re-measure with
+  // tools/measure-template.mjs if the form revision ever changes.
+  //
+  // x runs left to right with the page landscape and the title at the top.
+  template: {
+    gramsX0: 0.112,      // left edge of the Grams Retained column, sample 1
+    gramsX1: 0.176,      // right edge
+    sampleStep: 0.1405,  // to the same column of the next sample (3 columns over)
+    rowTop: 0.3085,      // top of the 37.5mm row
+    rowBottom: 0.7425,   // bottom of the TOTAL row
+    rowCount: 15,        // 13 sieves + PAN + TOTAL
+  },
+
   // ---- PDF PAGE SETUP -----------------------------------------------------
   // US Letter, in points. The PDF is written byte by byte in this file — there
   // is no library to load — so these are the only knobs.
@@ -1442,6 +1458,32 @@ function gramsColumnCells(grid, sampleIndex, sieves) {
     });
   }
   return { cells: cells, ok: true };
+}
+
+/* Cell rectangles straight from the template, no table detection at all. The
+   page has already been warped to a known rectangle, so the form's own geometry
+   tells us where every cell is. Detecting the grid was the wrong problem: the
+   sheet is a fixed printed template, and its coordinates are constants. */
+function templateCells(w, h, sampleIndex, sieves) {
+  const T = CONFIG.template;
+  const shift = T.sampleStep * (sampleIndex || 0);
+  const x0 = (T.gramsX0 + shift) * w;
+  const x1 = (T.gramsX1 + shift) * w;
+  const top = T.rowTop * h;
+  const pitch = (T.rowBottom - T.rowTop) * h / T.rowCount;
+  const labels = sieves.map((s) => s.key).concat(["pan", "totalWt"]);
+  const cells = [];
+  for (let i = 0; i < T.rowCount; i++) {
+    cells.push({
+      key: labels[i],
+      skip: i < sieves.length ? !!sieves[i].skip : false,
+      x: Math.round(x0),
+      y: Math.round(top + i * pitch),
+      w: Math.round(x1 - x0),
+      h: Math.round(pitch),
+    });
+  }
+  return cells;
 }
 
 /* Upright or upside down? Both give a valid-looking grid — the table is
