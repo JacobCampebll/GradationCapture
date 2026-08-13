@@ -62,22 +62,52 @@ local reader cannot do well, and typing beats correcting bad OCR.
 
 ---
 
-## What is NOT built yet
+## Reading the photo — where that stands
 
-This is steps 1–2 of the five-step plan in `docs/HANDOFF.md`. Deliberately deferred:
+The goal is: photograph the sheet, the values arrive filled in, you glance and confirm, you get
+a PDF. No typing. Four of the five pieces are built and tested. One is blocked.
 
-- **No digit OCR.** Every value is keyed by hand. Steps 3–5 (MNIST baseline → constraint
-  solver → fine-tune on real lab handwriting) make the app faster; they do not make it work,
-  and the app is useful today without them.
-- **No cell-segmentation overlay.** The OpenCV.js rectify-and-crop step only earns its keep as
-  the front half of the OCR pipeline. Building it now would ship 8 MB of WebAssembly that
-  does nothing for the tech.
-- **Nothing is uploaded anywhere.** Export is download or clipboard. Where the data ultimately
+| Piece | State |
+|---|---|
+| **Digit classifier** | Built. A 8,778-parameter conv net trained on MNIST with heavy augmentation (`tools/train_digits.py`). Ships as `model.js` inside the app — no ONNX, no CDN, no fetch. |
+| **Inference in the browser** | Built. The forward pass is hand-written JavaScript. A test replays 40 held-out digits through both Python and JS and fails if the logits disagree. |
+| **Glyph normalisation** | Built. `prepareGlyph` crops to the ink, scales the long side to 20px, and centres by centre of mass — the MNIST convention. Skipping this is the usual reason an MNIST net collapses on real input. |
+| **Constraint solver** | Built. `cellCandidates` beams over the top digits per position; `solveCumulative` picks the combination that keeps the cumulative weights increasing. A leading digit misread so the row goes backwards gets repaired from the runner-up, and the cell is flagged as repaired. |
+| **Finding the cells in a photo** | **BLOCKED.** See below. |
+
+### What is blocking it
+
+Segmentation — locating the grams column and cropping each of the 14 cells out of a phone photo
+— cannot be written or validated without **real photos of filled-in worksheets**, taken the way
+techs will actually take them. Building it against a synthetic mock-up would produce code that
+looks right and fails on contact with the first real sheet.
+
+**What to send:** 5–10 photos of completed KYTC worksheets. Ordinary phone photos, held by hand,
+whatever lighting the lab has. Include the bad ones — tilted, shadowed, a corner cut off, glare
+off the page. Different techs' handwriting if you can. Those are what the segmentation has to
+survive, and a set of ten clean flat scans would prove nothing.
+
+### What to expect when it works
+
+The classifier's honest starting accuracy on real handwriting is the handoff's own estimate:
+85–90% per digit. The constraint solver lifts that a long way at the row level — the sheet's
+arithmetic pins most misreads — but it will not be perfect on day one. That is what the review
+screen is for, and why every value carries where it came from:
+
+- **unmarked** — you typed it
+- **yellow** — read, but the classifier was unsure
+- **purple** — read, and the maths overrode what the classifier said. Look at these hardest.
+- **red** — read, and nothing could reconcile it
+- **green** — you corrected it
+
+Every correction is logged (`recordCorrection`) as a labelled sample in your own techs' writing.
+After 30–50 sheets that becomes a fine-tuning set, and accuracy climbs fast because this is a
+tiny closed domain: one form, a few pens, a few people.
+
+### Still not built
+
+- **Nothing is uploaded anywhere.** Export is PDF, CSV or clipboard. Where the data ultimately
   lands is open question 1 below.
-
-The constraint checks that the OCR solver will lean on are already written and tested, so step 4
-inherits them rather than re-deriving them. Correction logging is wired (`recordCorrection`) and
-starts collecting labeled samples the day a classifier pre-fills a cell.
 
 ---
 
@@ -85,9 +115,11 @@ starts collecting labeled samples the day a classifier pre-fills a cell.
 
 ```
 index.html          the whole app — CONFIG block at the top, logic below the line
+model.js            GENERATED digit-classifier weights (tools/train_digits.py)
 gradation.py        the calculation, in Python. THE TEST ORACLE — change math here first
 test/logic.test.mjs 81 tests; lifts the functions out of index.html, compares to gradation.py
 tools/make-icons.py regenerates the PWA icons
+tools/train_digits.py trains the digit classifier and writes model.js + the parity fixture
 manifest.json       home-screen install
 sw.js               offline shell cache — BUMP THE CACHE NAME ON EVERY DEPLOY
 netlify.toml        static publish + no-cache header on sw.js
@@ -111,8 +143,14 @@ what else moved.
 
 ```
 npm test            # 81 tests, no dependencies
-python3 gradation.py   # print the oracle's table for the verified sheet
+python3 gradation.py            # print the oracle's table for the verified sheet
+python3 tools/train_digits.py --check   # gradient-check the trainer, ~10 seconds
+python3 tools/train_digits.py           # retrain the classifier and rewrite model.js
 ```
+
+The trainer gradient-checks itself before it will train, in float64 with a small epsilon —
+ReLU and max-pool are piecewise linear, so a large step straddles a kink and reports a huge
+error on a network that is perfectly correct.
 
 `gradation.py` is the source of truth for the math. One test shells out to it and demands the
 browser agree digit for digit, so the two implementations cannot drift. Change the math in the
