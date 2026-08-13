@@ -8,6 +8,8 @@
     "test": "node --test test/*.test.mjs",
     "oracle": "python3 gradation.py",
     "icons": "python3 tools/make-icons.py",
+    "digits": "python3 tools/train_digits.py",
+    "seg": "node tools/eval-segmentation.mjs",
     "dev": "netlify dev",
     "deploy": "netlify deploy",
     "deploy:prod": "netlify deploy --prod"

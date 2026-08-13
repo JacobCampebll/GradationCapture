@@ -69,23 +69,30 @@ a PDF. No typing. Four of the five pieces are built and tested. One is blocked.
 
 | Piece | State |
 |---|---|
-| **Digit classifier** | Built. A 8,778-parameter conv net trained on MNIST with heavy augmentation (`tools/train_digits.py`). Ships as `model.js` inside the app — no ONNX, no CDN, no fetch. |
-| **Inference in the browser** | Built. The forward pass is hand-written JavaScript. A test replays 40 held-out digits through both Python and JS and fails if the logits disagree. |
-| **Glyph normalisation** | Built. `prepareGlyph` crops to the ink, scales the long side to 20px, and centres by centre of mass — the MNIST convention. Skipping this is the usual reason an MNIST net collapses on real input. |
-| **Constraint solver** | Built. `cellCandidates` beams over the top digits per position; `solveCumulative` picks the combination that keeps the cumulative weights increasing. A leading digit misread so the row goes backwards gets repaired from the runner-up, and the cell is flagged as repaired. |
-| **Finding the cells in a photo** | **BLOCKED.** See below. |
+| **Digit classifier** | **Done.** 8,778-parameter conv net, MNIST + heavy augmentation. 98.7% on clean test digits, 95.2% on augmented ones. Ships as `model.js` (46 KB) inside the app — no ONNX, no CDN, no fetch. |
+| **Inference in the browser** | **Done.** Hand-written JS forward pass. A test replays 40 held-out digits through both Python and JS and fails if any logit disagrees by more than 2e-3. |
+| **Glyph normalisation** | **Done.** `prepareGlyph` crops to the ink, scales the long side to 20px, and centres by centre of mass — the MNIST convention. Skipping this is the usual reason an MNIST net collapses on real input. |
+| **Constraint solver** | **Done.** `cellCandidates` beams over the top digits per position; `solveCumulative` picks the combination that keeps the cumulative weights increasing. A leading digit misread so the row goes backwards gets repaired from the runner-up, and the cell is flagged as repaired. |
+| **Finding the cells in a photo** | **In progress — 2 of 20 photos.** See below. |
 
-### What is blocking it
+### Where segmentation stands
 
-Segmentation — locating the grams column and cropping each of the 14 cells out of a phone photo
-— cannot be written or validated without **real photos of filled-in worksheets**, taken the way
-techs will actually take them. Building it against a synthetic mock-up would produce code that
-looks right and fails on contact with the first real sheet.
+20 real photos live in `test/fixtures/photos` — every orientation, several angles, glare, and
+one low-resolution screenshot. `npm run seg` scores the segmenter against all of them.
 
-**What to send:** 5–10 photos of completed KYTC worksheets. Ordinary phone photos, held by hand,
-whatever lighting the lab has. Include the bad ones — tilted, shadowed, a corner cut off, glare
-off the page. Different techs' handwriting if you can. Those are what the segmentation has to
-survive, and a set of ten clean flat scans would prove nothing.
+**Currently 2 of 20.** It finds the page, corrects skew, tries all four quarter turns, and uses
+the wide SPECIFICATION column to tell upright from upside-down. What it cannot yet do reliably
+is string together all 16 row rules and all 10 column rules on a sheet photographed at an angle:
+the detector finds 18-33 candidate rules but the uniform-pitch filter only chains 5-12 of them,
+because perspective makes the row spacing change down the page faster than the tolerance allows.
+
+The honest read is that rotation and skew correction are not enough — this needs explicit
+detection of the page quadrilateral and a proper perspective warp, so the table is square before
+any line finding happens. That is the next piece of work.
+
+**It refuses rather than guesses.** Every one of the 18 failures returns `ok:false` with a
+reason. A misplaced cell would produce confident nonsense in the grams column that the downstream
+arithmetic cannot distinguish from an odd sheet.
 
 ### What to expect when it works
 
@@ -117,7 +124,7 @@ tiny closed domain: one form, a few pens, a few people.
 index.html          the whole app — CONFIG block at the top, logic below the line
 model.js            GENERATED digit-classifier weights (tools/train_digits.py)
 gradation.py        the calculation, in Python. THE TEST ORACLE — change math here first
-test/logic.test.mjs 81 tests; lifts the functions out of index.html, compares to gradation.py
+test/logic.test.mjs 128 tests; lifts the functions out of index.html, compares to gradation.py
 tools/make-icons.py regenerates the PWA icons
 tools/train_digits.py trains the digit classifier and writes model.js + the parity fixture
 manifest.json       home-screen install
@@ -142,7 +149,7 @@ what else moved.
 ## Tests
 
 ```
-npm test            # 81 tests, no dependencies
+npm test            # 128 tests, no dependencies
 python3 gradation.py            # print the oracle's table for the verified sheet
 python3 tools/train_digits.py --check   # gradient-check the trainer, ~10 seconds
 python3 tools/train_digits.py           # retrain the classifier and rewrite model.js
