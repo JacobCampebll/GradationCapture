@@ -16,6 +16,29 @@
 [build]
   publish = "."
 
+# publish = "." serves the whole repo, which would put the worksheet photos in
+# test/fixtures on a public URL. They are real company documents and have no
+# business being downloadable, so the non-app paths are forced to 404.
+# force = true matters: without it Netlify serves the static file first and the
+# rule never fires.
+[[redirects]]
+  from = "/test/*"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/tools/*"
+  to = "/index.html"
+  status = 404
+  force = true
+
+[[redirects]]
+  from = "/docs/*"
+  to = "/index.html"
+  status = 404
+  force = true
+
 # The service worker must never be served stale, or phones keep running the old
 # app forever. Everything else can cache hard.
 [[headers]]
