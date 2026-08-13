@@ -868,6 +868,362 @@ function solveCumulative(cells, ctx) {
   return { picks: picks, solved: true, score: bestScore };
 }
 
+/* ---------- SHEET SEGMENTATION -------------------------------------------
+   Find the printed table in a phone photo and cut the grams-retained column
+   into cells. The form is a fixed template, so once the grid is located every
+   cell position follows from it — no per-cell detection needed.
+
+   Plain canvas work, no OpenCV: adaptive threshold against a blurred background
+   (kills the shadow across the page), morphological opening along one axis to
+   keep only the long printed rules, then projection peaks for the grid.
+   -------------------------------------------------------------------------- */
+
+function toGrayscale(rgba, w, h) {
+  const g = new Float32Array(w * h);
+  for (let i = 0, p = 0; i < g.length; i++, p += 4) {
+    g[i] = (0.299 * rgba[p] + 0.587 * rgba[p + 1] + 0.114 * rgba[p + 2]) / 255;
+  }
+  return g;
+}
+
+/* Separable box blur via running sums — O(n) regardless of radius. */
+function boxBlur(src, w, h, r) {
+  const tmp = new Float32Array(w * h);
+  const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    let sum = 0;
+    for (let x = 0; x <= r && x < w; x++) sum += src[row + x];
+    for (let x = 0; x < w; x++) {
+      const add = x + r, drop = x - r - 1;
+      if (add < w && x > 0) sum += src[row + add];
+      if (drop >= 0) sum -= src[row + drop];
+      const lo = Math.max(0, x - r), hi = Math.min(w - 1, x + r);
+      tmp[row + x] = sum / (hi - lo + 1);
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    let sum = 0;
+    for (let y = 0; y <= r && y < h; y++) sum += tmp[y * w + x];
+    for (let y = 0; y < h; y++) {
+      const add = y + r, drop = y - r - 1;
+      if (add < h && y > 0) sum += tmp[add * w + x];
+      if (drop >= 0) sum -= tmp[drop * w + x];
+      const lo = Math.max(0, y - r), hi = Math.min(h - 1, y + r);
+      out[y * w + x] = sum / (hi - lo + 1);
+    }
+  }
+  return out;
+}
+
+/* Ink is anything meaningfully darker than its own neighbourhood. Comparing
+   against a local background rather than a global threshold is what lets a
+   photo with a shadow down one side still segment. */
+function inkMask(gray, w, h, delta, radius) {
+  const bg = boxBlur(gray, w, h, radius || Math.round(Math.min(w, h) / 24));
+  const mask = new Uint8Array(w * h);
+  const d = delta === undefined ? 0.10 : delta;
+  for (let i = 0; i < mask.length; i++) mask[i] = gray[i] < bg[i] - d ? 1 : 0;
+  return mask;
+}
+
+/* Morphological opening along one axis: keep only ink belonging to a run at
+   least `len` long. Printed rules survive; handwriting and speckle do not.
+   gapTol bridges the odd background pixel so JPEG noise does not chop a rule
+   into pieces shorter than the threshold. */
+function openRuns(mask, w, h, len, horizontal, gapTol) {
+  const out = new Uint8Array(w * h);
+  const tol = gapTol === undefined ? 2 : gapTol;
+  const n = horizontal ? h : w;
+  const m = horizontal ? w : h;
+  for (let a = 0; a < n; a++) {
+    const at = (b) => (horizontal ? a * w + b : b * w + a);
+    let start = -1, gap = 0;
+    for (let b = 0; b < m; b++) {
+      if (mask[at(b)]) {
+        if (start < 0) start = b;
+        gap = 0;
+      } else if (start >= 0) {
+        gap++;
+        if (gap > tol) {
+          const end = b - gap;
+          if (end - start + 1 >= len) for (let k = start; k <= end; k++) out[at(k)] = 1;
+          start = -1; gap = 0;
+        }
+      }
+    }
+    if (start >= 0) {
+      const end = m - 1 - gap;
+      if (end - start + 1 >= len) for (let k = start; k <= end; k++) out[at(k)] = 1;
+    }
+  }
+  return out;
+}
+
+/* Where is the paper? Everything outside it — the bench, a shadow, the edge of
+   the table — is noise that wrecks both the skew estimate and the line finding.
+   The page is much brighter than its surroundings, so a coverage profile finds
+   its extent without needing contour tracing. */
+function findPageBox(gray, w, h, thresh) {
+  const t = thresh === undefined ? 0.55 : thresh;
+  const rowCover = new Float32Array(h);
+  const colCover = new Float32Array(w);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (gray[y * w + x] > t) { rowCover[y]++; colCover[x]++; }
+    }
+  }
+  const span = (cover, size, other) => {
+    const need = other * 0.5;
+    let bestA = 0, bestB = size - 1, a = -1, bestLen = -1;
+    for (let i = 0; i < size; i++) {
+      if (cover[i] >= need) {
+        if (a < 0) a = i;
+      } else if (a >= 0) {
+        if (i - a > bestLen) { bestLen = i - a; bestA = a; bestB = i - 1; }
+        a = -1;
+      }
+    }
+    if (a >= 0 && size - a > bestLen) { bestA = a; bestB = size - 1; }
+    return [bestA, bestB];
+  };
+  const [y0, y1] = span(rowCover, h, w);
+  const [x0, x1] = span(colCover, w, h);
+  return { x0: x0, y0: y0, x1: x1, y1: y1, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+}
+
+function clipMaskTo(mask, w, h, box, inset) {
+  const pad = inset || 0;
+  for (let y = 0; y < h; y++) {
+    const inRow = y >= box.y0 + pad && y <= box.y1 - pad;
+    for (let x = 0; x < w; x++) {
+      if (!inRow || x < box.x0 + pad || x > box.x1 - pad) mask[y * w + x] = 0;
+    }
+  }
+  return mask;
+}
+
+function profile(mask, w, h, axis) {
+  const n = axis === "rows" ? h : w;
+  const out = new Float32Array(n);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (mask[y * w + x]) out[axis === "rows" ? y : x]++;
+    }
+  }
+  return out;
+}
+
+/* Peak positions in a projection: local maxima above a fraction of the best,
+   merged when they sit within minGap of each other (a printed rule is 2-4px). */
+function profilePeaks(prof, minFrac, minGap) {
+  let max = 0;
+  for (let i = 0; i < prof.length; i++) if (prof[i] > max) max = prof[i];
+  if (max <= 0) return [];
+  const thresh = max * (minFrac === undefined ? 0.35 : minFrac);
+  const gap = minGap || 4;
+  const peaks = [];
+  let i = 0;
+  while (i < prof.length) {
+    if (prof[i] < thresh) { i++; continue; }
+    let j = i, bestI = i, bestV = prof[i], sum = 0, wsum = 0;
+    while (j < prof.length && prof[j] >= thresh) {
+      if (prof[j] > bestV) { bestV = prof[j]; bestI = j; }
+      sum += prof[j]; wsum += prof[j] * j;
+      j++;
+    }
+    peaks.push({ pos: sum > 0 ? wsum / sum : bestI, weight: sum, span: j - i });
+    i = j;
+  }
+  // merge peaks that are really one thick rule
+  const merged = [];
+  peaks.forEach((p) => {
+    const last = merged[merged.length - 1];
+    if (last && p.pos - last.pos < gap) {
+      if (p.weight > last.weight) merged[merged.length - 1] = p;
+    } else {
+      merged.push(p);
+    }
+  });
+  return merged;
+}
+
+/* Skew, by shearing the row projection at candidate angles and keeping the one
+   that makes the printed rules stack most sharply. Cheap and good to ~0.1deg. */
+function estimateSkew(mask, w, h, maxDeg, stepDeg) {
+  const lim = maxDeg === undefined ? 4 : maxDeg;
+  const step = stepDeg || 0.2;
+  let best = 0, bestScore = -1;
+  for (let deg = -lim; deg <= lim; deg += step) {
+    const t = Math.tan(deg * Math.PI / 180);
+    const pad = Math.ceil(Math.abs(t) * w) + 2;
+    const acc = new Float32Array(h + pad * 2);
+    for (let y = 0; y < h; y++) {
+      const row = y * w;
+      for (let x = 0; x < w; x += 2) {          // every other column is plenty
+        if (mask[row + x]) {
+          const yy = y + pad + ((t * x) | 0);
+          if (yy >= 0 && yy < acc.length) acc[yy]++;
+        }
+      }
+    }
+    // Sharpness: a correct angle stacks each printed rule into one tall bin.
+    let score = 0;
+    for (let i = 0; i < acc.length; i++) score += acc[i] * acc[i];
+    if (score > bestScore) { bestScore = score; best = deg; }
+  }
+  return best * Math.PI / 180;
+}
+
+function rotateGray(gray, w, h, radians) {
+  if (!radians) return { gray: gray, w: w, h: h };
+  const out = new Float32Array(w * h);
+  const cos = Math.cos(radians), sin = Math.sin(radians);
+  const cx = w / 2, cy = h / 2;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const dx = x - cx, dy = y - cy;
+      const sx = cos * dx + sin * dy + cx;
+      const sy = -sin * dx + cos * dy + cy;
+      const x0 = Math.floor(sx), y0 = Math.floor(sy);
+      if (x0 < 0 || y0 < 0 || x0 + 1 >= w || y0 + 1 >= h) { out[y * w + x] = 1; continue; }
+      const fx = sx - x0, fy = sy - y0;
+      out[y * w + x] =
+        gray[y0 * w + x0] * (1 - fx) * (1 - fy) + gray[y0 * w + x0 + 1] * fx * (1 - fy) +
+        gray[(y0 + 1) * w + x0] * (1 - fx) * fy + gray[(y0 + 1) * w + x0 + 1] * fx * fy;
+    }
+  }
+  return { gray: out, w: w, h: h };
+}
+
+/* The gradations table is the tallest stack of near-evenly-spaced rules on the
+   page. Find the longest run whose gaps agree within tolerance. */
+function longestUniformRun(peaks, tolerance) {
+  if (peaks.length < 3) return peaks.slice();
+  const tol = tolerance === undefined ? 0.28 : tolerance;
+  let best = [];
+  for (let i = 0; i < peaks.length - 1; i++) {
+    for (let j = i + 1; j < peaks.length; j++) {
+      const pitch = peaks[j].pos - peaks[i].pos;
+      if (pitch <= 3) continue;
+      const run = [peaks[i], peaks[j]];
+      let expect = peaks[j].pos + pitch;
+      for (let k = j + 1; k < peaks.length; k++) {
+        if (Math.abs(peaks[k].pos - expect) <= pitch * tol) {
+          run.push(peaks[k]);
+          expect = peaks[k].pos + pitch;
+        }
+      }
+      if (run.length > best.length) best = run;
+    }
+  }
+  return best;
+}
+
+/* Locate the grid. Returns deskewed-space row rules and column rules. */
+function findSheetGrid(gray, w, h, delta) {
+  const d = delta === undefined ? 0.08 : delta;
+  const page = findPageBox(gray, w, h);
+
+  // Skew comes from the raw ink, not from detected rules: a tilted rule drifts
+  // off its pixel row within a few dozen pixels, so run-length detection finds
+  // nothing until the image is already straight. Estimating from all the ink
+  // breaks that circularity.
+  const rough = clipMaskTo(inkMask(gray, w, h, d), w, h, page, 6);
+  const skew = estimateSkew(rough, w, h);
+
+  const rot = rotateGray(gray, w, h, skew);
+  const straight = clipMaskTo(inkMask(rot.gray, w, h, d), w, h, page, 6);
+
+  const hLines = openRuns(straight, w, h, Math.round(page.w / 6), true);
+  const vLines = openRuns(straight, w, h, Math.round(page.h / 8), false);
+
+  const rowPeaks = profilePeaks(profile(hLines, w, h, "rows"), 0.30, 5);
+  const colPeaks = profilePeaks(profile(vLines, w, h, "cols"), 0.25, 5);
+
+  return {
+    skew: skew,
+    page: page,
+    gray: rot.gray,
+    w: w,
+    h: h,
+    rowPeaks: rowPeaks.map((p) => p.pos),
+    colPeaks: colPeaks.map((p) => p.pos),
+    rows: longestUniformRun(rowPeaks).map((p) => p.pos),
+    // The nine gradation columns are equal width, so the same uniform-pitch trick
+    // that finds the sieve rows also isolates them from the sieve-label column,
+    // the wide specification column, and any doubled page border.
+    cols: longestUniformRun(colPeaks).map((p) => p.pos),
+  };
+}
+
+/* Given the grid, hand back one rectangle per sieve row in the grams column of
+   the requested sample (0, 1 or 2). The form has a sieve-label column then
+   three groups of three, so the grams column of sample n sits between vertical
+   rules 1 + 3n and 2 + 3n. */
+function gramsColumnCells(grid, sampleIndex, sieves) {
+  const rows = grid.rows;
+  const cols = grid.cols;
+  const page = grid.page;
+  const wanted = sieves.length + 2; // sieve rows + PAN + TOTAL
+
+  // Every one of these refusals is preferable to guessing. A wrong cell position
+  // produces confident nonsense in the grams column, and the arithmetic checks
+  // downstream cannot tell that apart from a genuinely odd sheet.
+  if (rows.length < wanted + 1) return { cells: [], ok: false, reason:
+    `found ${rows.length} row rules, need ${wanted + 1}` };
+  // Ten equally spaced verticals bound the nine gradation columns. Fewer means
+  // the grid was not really found and we cannot know which column is Grams.
+  if (cols.length < 10) return { cells: [], ok: false, reason:
+    `found ${cols.length} evenly spaced column rules, need 10` };
+
+  const first = 3 * (sampleIndex || 0);
+  if (cols.length < first + 2) return { cells: [], ok: false, reason: "sample column not found" };
+  const x0 = cols[first], x1 = cols[first + 1];
+
+  // Shape sanity: the grams column is a narrow strip of the page, and its cells
+  // are wider than they are tall.
+  const colW = x1 - x0;
+  if (colW < page.w * 0.04 || colW > page.w * 0.20) return { cells: [], ok: false, reason:
+    `grams column is ${Math.round(colW)}px wide against a ${page.w}px page — not plausible` };
+  const tableSpan = rows[rows.length - 1] - rows[0];
+  if (tableSpan < page.h * 0.20 || tableSpan > page.h * 0.85) return { cells: [], ok: false, reason:
+    `the row rules span ${Math.round(tableSpan)}px of a ${page.h}px page — not the gradations table` };
+  const cellH = tableSpan / (rows.length - 1);
+  if (colW / cellH < 1.2 || colW / cellH > 6) return { cells: [], ok: false, reason:
+    `cells would be ${Math.round(colW)}x${Math.round(cellH)}; wrong shape for this form` };
+
+  // Take the LAST `wanted+1` rules: the run ends at TOTAL, and stray rules above
+  // the table (the GRADATIONS banner) would otherwise shift everything up.
+  const use = rows.slice(rows.length - (wanted + 1));
+  const labels = sieves.map((s) => s.key).concat(["pan", "totalWt"]);
+  const cells = [];
+  for (let i = 0; i < wanted; i++) {
+    const y0 = use[i], y1 = use[i + 1];
+    cells.push({
+      key: labels[i],
+      skip: i < sieves.length ? !!sieves[i].skip : false,
+      x: Math.round(x0 + 2), y: Math.round(y0 + 2),
+      w: Math.round(x1 - x0 - 4), h: Math.round(y1 - y0 - 4),
+    });
+  }
+  return { cells: cells, ok: true };
+}
+
+/* Whole pipeline: pixels in, cell rectangles and the deskewed grayscale out. */
+function segmentSheet(rgba, w, h, sampleIndex) {
+  const gray = toGrayscale(rgba, w, h);
+  const grid = findSheetGrid(gray, w, h);
+  const found = gramsColumnCells(grid, sampleIndex || 0, CONFIG.sieves);
+  return {
+    ok: found.ok,
+    reason: found.reason || "",
+    skewDeg: grid.skew * 180 / Math.PI,
+    grid: grid,
+    cells: found.cells,
+  };
+}
+
 /* ---------- RECOGNITION RESULTS -> THE SHEET ----------------------------
    Where a value came from is part of the record. A number the reader was sure
    of, a number the solver overrode, and a number the tech typed are three
