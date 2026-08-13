@@ -1,0 +1,1075 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>KYTC Gradation Capture</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0f172a">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  /* ============================================================
+     THEME — colors and fonts only. Content lives in CONFIG below.
+     ============================================================ */
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --panel2: #263449;
+    --accent: #38bdf8;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --ok: #4ade80;
+    --warn: #facc15;
+    --bad: #f87171;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh; padding: 14px 14px 60px; font-size: 16px;
+  }
+  header { margin-bottom: 14px; display: flex; align-items: flex-start; gap: 10px; }
+  header .grow { flex: 1; }
+  header h1 { font-size: 1.25rem; color: var(--accent); line-height: 1.2; }
+  header .sub { color: var(--muted); font-size: 0.82rem; margin-top: 2px; }
+  .badge {
+    background: var(--panel2); color: var(--muted); border-radius: 999px;
+    padding: 6px 12px; font-size: 0.75rem; white-space: nowrap;
+  }
+  .badge.has { background: var(--ok); color: #05310f; font-weight: 600; }
+
+  .panel { background: var(--panel); border-radius: 14px; padding: 16px; margin-bottom: 12px; }
+  .panel h2 {
+    font-size: 0.95rem; color: var(--accent); margin-bottom: 10px; letter-spacing: .02em;
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  }
+  .panel h2 .tog { background: none; border: 0; color: var(--muted); font-size: .78rem; cursor: pointer; font-family: inherit; }
+
+  .btn {
+    display: block; width: 100%; border: 0; border-radius: 12px;
+    padding: 15px; font-size: 1rem; font-weight: 600; font-family: inherit;
+    background: var(--panel2); color: var(--text); cursor: pointer; text-align: center;
+    margin-bottom: 10px;
+  }
+  .btn:active { transform: scale(0.985); }
+  .btn.primary { background: var(--accent); color: #06263a; }
+  .btn.go { background: var(--ok); color: #05310f; }
+  .btn.ghost { background: transparent; border: 1px solid var(--panel2); color: var(--muted); padding: 12px; font-weight: 500; }
+  .btn.danger { background: transparent; border: 1px solid var(--bad); color: var(--bad); padding: 12px; font-weight: 500; }
+  .btn:disabled { opacity: .5; }
+  .btn.camera { padding: 24px 16px; font-size: 1.1rem; }
+  .btn.camera .ico { display: block; font-size: 1.9rem; margin-bottom: 6px; }
+  .btnrow { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .btnrow .btn { margin-bottom: 10px; }
+
+  input[type="file"] { display: none; }
+
+  label.fl { display: block; font-size: 0.72rem; color: var(--muted); margin-bottom: 4px; letter-spacing: .03em; text-transform: uppercase; }
+  .field { margin-bottom: 12px; }
+  .field input, .field select {
+    width: 100%; padding: 12px; border-radius: 10px; font-size: 1rem; font-family: inherit;
+    background: var(--bg); color: var(--text); border: 2px solid transparent;
+  }
+  .field input:focus, .field select:focus { outline: 0; border-color: var(--accent); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+  /* sample tabs */
+  .tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+  .tab {
+    flex: 1; padding: 12px 6px; border: 0; border-radius: 10px; font-family: inherit;
+    font-size: .85rem; font-weight: 600; background: var(--panel2); color: var(--muted); cursor: pointer;
+  }
+  .tab.on { background: var(--accent); color: #06263a; }
+  .tab .dot { display: block; font-size: .66rem; font-weight: 500; margin-top: 2px; opacity: .8; }
+
+  /* sieve entry table */
+  table.sieve { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  table.sieve th {
+    text-align: right; font-size: .66rem; color: var(--muted); text-transform: uppercase;
+    letter-spacing: .03em; padding: 0 4px 6px; font-weight: 600;
+  }
+  table.sieve th.l { text-align: left; }
+  table.sieve td { padding: 3px 2px; border-bottom: 1px solid rgba(148,163,184,.12); }
+  table.sieve td.sv { font-size: .78rem; color: var(--text); white-space: nowrap; padding-right: 6px; }
+  table.sieve td.calc { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); width: 58px; padding-right: 4px; }
+  table.sieve td.calc.live { color: var(--text); }
+  table.sieve tr.skip td { color: #64748b; text-decoration: line-through; }
+  table.sieve tr.tot td { border-bottom: 0; font-weight: 700; }
+  table.sieve input {
+    width: 100%; min-width: 74px; padding: 9px 8px; border-radius: 8px; font-size: .95rem;
+    font-family: inherit; background: var(--bg); color: var(--text);
+    border: 2px solid transparent; text-align: right; font-variant-numeric: tabular-nums;
+  }
+  table.sieve input:focus { outline: 0; border-color: var(--accent); }
+  table.sieve input.bad { border-color: var(--bad); background: #2d1618; }
+  table.sieve input:disabled { background: transparent; }
+
+  .flags { margin-top: 12px; display: grid; gap: 6px; }
+  .flag {
+    font-size: .78rem; line-height: 1.4; padding: 9px 11px; border-radius: 9px;
+    border-left: 3px solid var(--bad); background: rgba(248,113,113,.1); color: #fecaca;
+  }
+  .flag.warn { border-left-color: var(--warn); background: rgba(250,204,21,.1); color: #fde68a; }
+
+  .kv { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid rgba(148,163,184,.12); font-size: .87rem; }
+  .kv:last-child { border-bottom: 0; }
+  .kv .k { color: var(--muted); }
+  .kv .v { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .verdict { font-size: .72rem; font-weight: 700; padding: 4px 10px; border-radius: 999px; }
+  .verdict.pass { background: var(--ok); color: #05310f; }
+  .verdict.fail { background: var(--bad); color: #3a0b0b; }
+
+  .thumb { width: 100%; border-radius: 12px; display: block; margin-bottom: 10px; cursor: zoom-in; }
+  .status { font-size: .82rem; color: var(--muted); text-align: center; padding: 8px 0; min-height: 1.2em; }
+  .status.err { color: var(--bad); }
+  .status.ok { color: var(--ok); }
+  .legend { font-size: .78rem; color: var(--muted); line-height: 1.55; }
+  .hidden { display: none !important; }
+
+  .scroller { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table.sum { border-collapse: collapse; font-size: .8rem; white-space: nowrap; }
+  table.sum th, table.sum td { padding: 6px 9px; border-bottom: 1px solid rgba(148,163,184,.12); text-align: right; font-variant-numeric: tabular-nums; }
+  table.sum th { color: var(--muted); font-size: .68rem; text-transform: uppercase; font-weight: 600; }
+  table.sum th.l, table.sum td.l { text-align: left; }
+
+  .qitem { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--panel2); font-size: .85rem; }
+  .qitem:last-child { border-bottom: 0; }
+  .qitem .meta { color: var(--muted); font-size: .74rem; }
+  .qitem .acts { display: flex; gap: 4px; }
+  .qitem button { background: none; border: 0; color: var(--muted); font-size: 1.1rem; cursor: pointer; padding: 4px 8px; font-family: inherit; }
+  .qitem button.open { font-size: .8rem; color: var(--accent); }
+
+  /* photo lightbox */
+  #lightbox {
+    position: fixed; inset: 0; background: #000; z-index: 50;
+    display: flex; flex-direction: column;
+  }
+  #lightbox .lbbar { display: flex; gap: 8px; padding: 8px; background: #111; }
+  #lightbox .lbbar button {
+    flex: 1; padding: 12px; border: 0; border-radius: 8px; background: #263449;
+    color: #e2e8f0; font-family: inherit; font-size: .9rem; cursor: pointer;
+  }
+  #lightbox .lbwrap { flex: 1; overflow: auto; display: flex; align-items: center; justify-content: center; }
+  #lightbox img { transform-origin: center center; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="grow">
+    <h1 id="appTitle"></h1>
+    <div class="sub" id="appSubtitle"></div>
+  </div>
+  <div class="badge" id="saveBadge">Saved: 0</div>
+</header>
+
+<main id="app">
+
+  <!-- ============ PHOTO ============ -->
+  <section class="panel">
+    <h2>Worksheet Photo</h2>
+    <img id="thumb" class="thumb hidden" alt="Photographed worksheet">
+    <label class="btn primary camera" for="photoInput" id="photoBtn">
+      <span class="ico">&#128247;</span>
+      <span id="photoBtnText">Photograph the Worksheet</span>
+    </label>
+    <input type="file" id="photoInput" accept="image/*" capture="environment">
+    <label class="btn ghost" for="galleryInput">Choose an existing photo</label>
+    <input type="file" id="galleryInput" accept="image/*">
+    <div class="status" id="photoStatus"></div>
+    <div class="legend">
+      The photo is the record. Tap it to zoom while you key the numbers, and keep it with the
+      exported data &mdash; if a value is ever disputed, the photo settles it.
+    </div>
+  </section>
+
+  <!-- ============ SHEET INFO ============ -->
+  <section class="panel">
+    <h2>Sheet Info <button class="tog" data-tog="sheetFields">hide</button></h2>
+    <div id="sheetFields"></div>
+  </section>
+
+  <!-- ============ SAMPLES ============ -->
+  <section class="panel">
+    <h2 id="sampleTitle">Sample</h2>
+    <div class="tabs" id="sampleTabs"></div>
+    <div id="sampleFields" class="grid2"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Grams Retained <span class="legend" style="text-transform:none">cumulative</span></h2>
+    <table class="sieve">
+      <thead>
+        <tr>
+          <th class="l">Sieve</th>
+          <th>Grams Ret.</th>
+          <th>% Ret.</th>
+          <th>% Pass</th>
+        </tr>
+      </thead>
+      <tbody id="sieveBody"></tbody>
+    </table>
+    <div class="flags" id="sampleFlags"></div>
+  </section>
+
+  <!-- ============ RESULTS ============ -->
+  <section class="panel">
+    <h2>Wash &amp; Loss Check</h2>
+    <div id="lossBox"></div>
+  </section>
+
+  <!-- ============ ALL SAMPLES ============ -->
+  <section class="panel hidden" id="summaryPanel">
+    <h2>All Samples &mdash; Percent Passing</h2>
+    <div class="scroller"><table class="sum" id="summaryTable"></table></div>
+  </section>
+
+  <!-- ============ EXPORT ============ -->
+  <section class="panel">
+    <h2>Export</h2>
+    <div class="btnrow">
+      <button class="btn go" id="csvBtn">Download CSV</button>
+      <button class="btn primary" id="copyBtn">Copy Table</button>
+    </div>
+    <button class="btn ghost" id="photoDlBtn">Download the photo</button>
+    <button class="btn ghost" id="saveBtn">Save this sheet on the phone</button>
+    <div class="status" id="exportStatus"></div>
+  </section>
+
+  <!-- ============ SAVED ============ -->
+  <section class="panel">
+    <h2>Saved Sheets</h2>
+    <div id="savedList"></div>
+    <button class="btn danger" id="newBtn">Start a blank sheet</button>
+    <div class="status" id="savedStatus"></div>
+  </section>
+
+</main>
+
+<div id="lightbox" class="hidden">
+  <div class="lbbar">
+    <button id="lbRotate">Rotate</button>
+    <button id="lbZoomOut">&minus;</button>
+    <button id="lbZoomIn">+</button>
+    <button id="lbClose">Close</button>
+  </div>
+  <div class="lbwrap"><img id="lbImg" alt="Worksheet photo"></div>
+</div>
+
+<script>
+/* ==============================================================
+   CONFIG — EVERYTHING EDITABLE LIVES HERE.
+   To update this app, change values in this block only.
+   Do not edit below the "LOGIC" line unless changing behavior.
+   ============================================================== */
+const CONFIG = {
+  title: "KYTC Gradation Capture",
+  subtitle: "Worksheet for Bituminous Mixtures — Division of Materials",
+
+  // Printed on the form: "Maximum Loss of Aggregate on Extracted Gradation -- 1.5%"
+  maxLossPct: 1.5,
+
+  // The form holds three gradation columns side by side.
+  sampleCount: 3,
+
+  // Photo handling. 1600px keeps a 14-row column legible when zoomed while
+  // staying small enough that several saved sheets fit in phone storage.
+  maxImageDim: 1600,
+  jpegQuality: 0.75,
+  maxSavedSheets: 8,
+
+  // ---- SIEVE ROWS, top to bottom, exactly as printed on the form ----------
+  // skip:true  = pre-struck-out on the paper form, never used
+  // role:'pan' / role:'total' = the two summary rows under the sieves
+  sieves: [
+    { key: "s37_5",  label: '37.5mm (1 1/2")' },
+    { key: "s25",    label: '25mm (1")' },
+    { key: "s19",    label: '19mm (3/4")' },
+    { key: "s12_5",  label: '12.5mm (1/2")' },
+    { key: "s9_5",   label: '9.5mm (3/8")' },
+    { key: "s6",     label: '6mm (1/4")', skip: true },
+    { key: "s4_75",  label: "4.75mm (No.4)" },
+    { key: "s2_36",  label: "2.36mm (No.8)" },
+    { key: "s1_18",  label: "1.18mm (No.16)" },
+    { key: "s600",   label: "600um (No.30)" },
+    { key: "s300",   label: "300um (No.50)" },
+    { key: "s150",   label: "150um (No.100)" },
+    { key: "s75",    label: "75um (No.200)" },
+  ],
+
+  // ---- ONE-PER-SHEET FIELDS ----------------------------------------------
+  // Typed, not read off the photo: free-text handwriting is the one thing a
+  // local digit reader cannot do, and typing beats correcting bad OCR.
+  // type: "text" | "number" | "date" | "select"
+  sheetFields: [
+    { key: "date",        label: "Date",              type: "date" },
+    { key: "county",      label: "County",            type: "select", options: "counties" },
+    { key: "projectNo",   label: "Project No.",       type: "text" },
+    { key: "producer",    label: "Producer",          type: "text" },
+    { key: "material",    label: "Type of Material",  type: "text" },
+    { key: "pctRap",      label: "Percent Rap",       type: "number" },
+    { key: "pctAc",       label: "Percent A.C.",      type: "number" },
+    { key: "mixTemp",     label: "Temp. of Mix",      type: "number" },
+    { key: "technician",  label: "Technician",        type: "text" },
+  ],
+
+  // ---- PER-SAMPLE FIELDS (one set per gradation column) -------------------
+  sampleFields: [
+    { key: "label",      label: "Sample Label",       type: "text",   wide: true },
+    { key: "lot",        label: "Lot",                type: "text" },
+    { key: "sublot",     label: "Sublot",             type: "text" },
+    { key: "dryStartWt", label: "Dry Start Wt.",      type: "number" },
+    { key: "washWt",     label: "After Wash Dry Wt.", type: "number" },
+    { key: "totalWt",    label: "TOTAL (as written)", type: "number" },
+    { key: "pan",        label: "PAN",                type: "number" },
+  ],
+
+  // The divisor for every percentage on the sheet.
+  divisorField: "washWt",
+
+  // Kentucky's 120 counties, for the header dropdown.
+  counties: [
+    "Adair","Allen","Anderson","Ballard","Barren","Bath","Bell","Boone","Bourbon","Boyd",
+    "Boyle","Bracken","Breathitt","Breckinridge","Bullitt","Butler","Caldwell","Calloway",
+    "Campbell","Carlisle","Carroll","Carter","Casey","Christian","Clark","Clay","Clinton",
+    "Crittenden","Cumberland","Daviess","Edmonson","Elliott","Estill","Fayette","Fleming",
+    "Floyd","Franklin","Fulton","Gallatin","Garrard","Grant","Graves","Grayson","Green",
+    "Greenup","Hancock","Hardin","Harlan","Harrison","Hart","Henderson","Henry","Hickman",
+    "Hopkins","Jackson","Jefferson","Jessamine","Johnson","Kenton","Knott","Knox","Larue",
+    "Laurel","Lawrence","Lee","Leslie","Letcher","Lewis","Lincoln","Livingston","Logan",
+    "Lyon","McCracken","McCreary","McLean","Madison","Magoffin","Marion","Marshall","Martin",
+    "Mason","Meade","Menifee","Mercer","Metcalfe","Monroe","Montgomery","Morgan","Muhlenberg",
+    "Nelson","Nicholas","Ohio","Oldham","Owen","Owsley","Pendleton","Perry","Pike","Powell",
+    "Pulaski","Robertson","Rockcastle","Rowan","Russell","Scott","Shelby","Simpson","Spencer",
+    "Taylor","Todd","Trigg","Trimble","Union","Warren","Washington","Wayne","Webster",
+    "Whitley","Wolfe","Woodford",
+  ],
+
+  csvFilenamePrefix: "KYTC-gradation",
+};
+
+/* ==============================================================
+   LOGIC — state, math, rendering, wiring. CONFIG-driven; no content here.
+   ============================================================== */
+const CUR_KEY = "kytc_grad_current_v1";
+const SAVED_KEY = "kytc_grad_saved_v1";
+const CORR_KEY = "kytc_grad_corrections_v1";
+
+const state = {
+  image: null,        // dataURL of the downscaled photo
+  sheet: {},          // sheetFields key -> string
+  samples: [],        // per column: { fields: {key->string}, grams: {sieveKey->string} }
+  active: 0,
+  prefill: {},        // "s<i>.<key>" -> { value, confidence }  (populated once OCR exists)
+  saved: [],
+  lbRotation: 0,
+  lbZoom: 1,
+};
+
+/* ---------- small helpers ---------- */
+const $ = (id) => document.getElementById(id);
+
+function esc(s) {
+  return String(s === null || s === undefined ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function setStatus(id, msg, kind) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = msg || "";
+  el.className = "status" + (kind ? " " + kind : "");
+}
+
+/* Parse a hand-keyed number. Returns null rather than 0 or NaN so a blank
+   cell can never be mistaken for a real zero reading. */
+function num(v) {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  if (s === "") return null;
+  const n = parseFloat(s.replace(/[^0-9.\-]/g, ""));
+  return isNaN(n) ? null : n;
+}
+
+/* Round half away from zero to `places`. JS Math.round breaks ties toward
+   +Infinity and Python's round() breaks them to even; this matches neither by
+   accident — it is the rounding the lab uses on paper. */
+function round1(x, places) {
+  const p = places === undefined ? 1 : places;
+  const f = Math.pow(10, p);
+  const scaled = x * f;
+  const r = Math.sign(scaled) * Math.round(Math.abs(scaled) + Number.EPSILON * Math.abs(scaled));
+  return r / f;
+}
+
+function todayISO() {
+  const d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+/* ---------- THE MATH — ported from gradation.py, which stays the oracle ----------
+   Grams retained are CUMULATIVE: each row already includes everything above it.
+
+     pct_retained = grams / after_wash_dry_wt * 100      (round 0.1)
+     pct_passing  = 100 - pct_retained                   (from the ROUNDED retained)
+
+   Sieve rows left blank above the largest particle are 0.0 retained / 100.0 passing.
+*/
+function calcSample(sample, sieves, maxLossPct) {
+  const grams = (sample && sample.grams) || {};
+  const fields = (sample && sample.fields) || {};
+  const washWt = num(fields[CONFIG.divisorField]);
+  const pan = num(fields.pan);
+  const totalWt = num(fields.totalWt);
+  const dryStartWt = num(fields.dryStartWt);
+
+  const rows = [];
+  for (const sv of sieves) {
+    if (sv.skip) continue;
+    const g = num(grams[sv.key]);
+    if (g === null) {
+      rows.push({ key: sv.key, label: sv.label, grams: null, pctRet: 0.0, pctPass: 100.0, blank: true });
+      continue;
+    }
+    if (!washWt) {
+      rows.push({ key: sv.key, label: sv.label, grams: g, pctRet: null, pctPass: null, blank: false });
+      continue;
+    }
+    const pctRet = round1(g / washWt * 100, 1);
+    rows.push({ key: sv.key, label: sv.label, grams: g, pctRet, pctPass: round1(100 - pctRet, 1), blank: false });
+  }
+
+  const out = { rows, washWt, pan, totalWt, dryStartWt, lossG: null, lossPct: null, lossOk: null, pctMinus200Wash: null };
+
+  if (washWt && pan !== null) {
+    out.lossG = round1(washWt - pan, 1);
+    out.lossPct = round1((washWt - pan) / washWt * 100, 2);
+    out.lossOk = out.lossPct <= maxLossPct;
+  }
+
+  // Wash-test % minus 200: the fines washed off, as a share of the starting weight.
+  // Only computable when Dry Start Wt. was recorded; it is a different number from
+  // the gradation's % passing the No.200 and both are reported.
+  if (dryStartWt && washWt !== null && dryStartWt > 0) {
+    out.pctMinus200Wash = round1((dryStartWt - washWt) / dryStartWt * 100, 1);
+  }
+
+  return out;
+}
+
+/* Constraint checks. These are the same relationships the OCR constraint-solver
+   will lean on later; here they catch a mis-keyed digit. */
+function sampleChecks(sample, calc, sieves, maxLossPct) {
+  const flags = [];
+  const grams = (sample && sample.grams) || {};
+  const used = sieves.filter((s) => !s.skip);
+
+  // 1. Cumulative weights only increase down the sheet.
+  let prevKey = null, prevVal = null;
+  for (const sv of used) {
+    const g = num(grams[sv.key]);
+    if (g === null) continue;
+    if (prevVal !== null && g < prevVal) {
+      const prevLabel = used.find((s) => s.key === prevKey).label;
+      flags.push({ level: "bad", keys: [sv.key], msg:
+        `${sv.label} (${g}) is less than ${prevLabel} (${prevVal}). Cumulative weights only go up.` });
+    }
+    prevKey = sv.key; prevVal = g;
+  }
+
+  // 2. PAN sits below the last sieve and at or under the wash weight.
+  if (calc.pan !== null && prevVal !== null && calc.pan < prevVal) {
+    flags.push({ level: "bad", keys: ["pan"], msg:
+      `PAN (${calc.pan}) is less than the last sieve (${prevVal}).` });
+  }
+  if (calc.pan !== null && calc.washWt && calc.pan > calc.washWt) {
+    flags.push({ level: "bad", keys: ["pan"], msg:
+      `PAN (${calc.pan}) is heavier than the After Wash Dry Wt. (${calc.washWt}).` });
+  }
+
+  // 3. TOTAL as written must equal the After Wash Dry Wt.
+  if (calc.totalWt !== null && calc.washWt && Math.abs(calc.totalWt - calc.washWt) > 0.05) {
+    flags.push({ level: "bad", keys: ["totalWt"], msg:
+      `TOTAL (${calc.totalWt}) does not match the After Wash Dry Wt. (${calc.washWt}). Re-read both cells.` });
+  }
+
+  // 4. Aggregate loss against the limit printed on the form.
+  if (calc.lossOk === false) {
+    flags.push({ level: "bad", keys: ["pan"], msg:
+      `Aggregate loss ${calc.lossPct}% is over the ${maxLossPct}% maximum.` });
+  }
+
+  // 5. No sieve may retain more than the whole sample.
+  if (calc.washWt) {
+    for (const sv of used) {
+      const g = num(grams[sv.key]);
+      if (g !== null && g > calc.washWt) {
+        flags.push({ level: "bad", keys: [sv.key], msg:
+          `${sv.label} (${g}) is heavier than the whole sample (${calc.washWt}).` });
+      }
+    }
+  }
+
+  // 6. Soft prompts — nothing wrong, just not finished.
+  const anyGrams = used.some((s) => num(grams[s.key]) !== null);
+  if (anyGrams && !calc.washWt) {
+    flags.push({ level: "warn", keys: [], msg:
+      "After Wash Dry Wt. is blank — every percentage needs it before this sheet means anything." });
+  }
+  if (anyGrams && calc.pan === null) {
+    flags.push({ level: "warn", keys: [], msg: "PAN is blank, so the aggregate loss check has not run." });
+  }
+
+  return flags;
+}
+
+function sampleHasData(sample) {
+  const f = (sample && sample.fields) || {};
+  const g = (sample && sample.grams) || {};
+  return Object.values(f).some((v) => String(v || "").trim() !== "") ||
+         Object.values(g).some((v) => String(v || "").trim() !== "");
+}
+
+/* ---------- CSV ---------- */
+function csvCell(v) {
+  const s = String(v === null || v === undefined ? "" : v);
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function fmt(v, places) {
+  if (v === null || v === undefined || v === "") return "";
+  return Number(v).toFixed(places === undefined ? 1 : places);
+}
+
+function buildCSV(sheet, samples, capturedAt) {
+  const lines = [];
+  lines.push("KYTC WORKSHEET FOR BITUMINOUS MIXTURES");
+  lines.push(["Exported", csvCell(capturedAt)].join(","));
+  lines.push("");
+
+  lines.push("SHEET INFO");
+  CONFIG.sheetFields.forEach((f) => {
+    lines.push(csvCell(f.label) + "," + csvCell((sheet || {})[f.key] || ""));
+  });
+
+  samples.forEach((sample, i) => {
+    if (!sampleHasData(sample)) return;
+    const calc = calcSample(sample, CONFIG.sieves, CONFIG.maxLossPct);
+    const fields = sample.fields || {};
+    lines.push("");
+    lines.push("SAMPLE " + (i + 1));
+    CONFIG.sampleFields.forEach((f) => {
+      lines.push(csvCell(f.label) + "," + csvCell(fields[f.key] || ""));
+    });
+    lines.push(csvCell("Aggregate Loss (g)") + "," + csvCell(fmt(calc.lossG, 1)));
+    lines.push(csvCell("Aggregate Loss (%)") + "," + csvCell(fmt(calc.lossPct, 2)));
+    lines.push(csvCell("Loss Check (max " + CONFIG.maxLossPct + "%)") + "," +
+      csvCell(calc.lossOk === null ? "" : calc.lossOk ? "OK" : "FAIL"));
+    lines.push(csvCell("% Minus 200 (wash)") + "," + csvCell(fmt(calc.pctMinus200Wash, 1)));
+    lines.push("");
+    lines.push(["Sieve", "Grams Retained", "Percent Retained", "Percent Passing"].join(","));
+    calc.rows.forEach((r) => {
+      lines.push([
+        csvCell(r.label),
+        csvCell(r.grams === null ? "" : fmt(r.grams, 1)),
+        csvCell(fmt(r.pctRet, 1)),
+        csvCell(fmt(r.pctPass, 1)),
+      ].join(","));
+    });
+  });
+
+  return lines.join("\r\n");
+}
+
+/* Tab-separated percent-passing block, for pasting straight into a spreadsheet
+   or a data-entry screen. */
+function buildTSV(samples) {
+  const active = samples.map((s, i) => ({ s, i })).filter((x) => sampleHasData(x.s));
+  const cols = active.length ? active : [{ s: samples[0], i: 0 }];
+  const head = ["Sieve"].concat(cols.map((c) => (c.s.fields || {}).label || "Sample " + (c.i + 1)));
+  const lines = [head.join("\t")];
+  const calcs = cols.map((c) => calcSample(c.s, CONFIG.sieves, CONFIG.maxLossPct));
+  CONFIG.sieves.filter((s) => !s.skip).forEach((sv, r) => {
+    lines.push([sv.label].concat(calcs.map((c) => fmt(c.rows[r].pctPass, 1))).join("\t"));
+  });
+  return lines.join("\n");
+}
+
+/* ---------- image downscaling ---------- */
+function downscale(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let { width, height } = img;
+      const longest = Math.max(width, height);
+      if (longest > CONFIG.maxImageDim) {
+        const s = CONFIG.maxImageDim / longest;
+        width = Math.round(width * s);
+        height = Math.round(height * s);
+      }
+      const c = document.createElement("canvas");
+      c.width = width; c.height = height;
+      c.getContext("2d").drawImage(img, 0, 0, width, height);
+      resolve(c.toDataURL("image/jpeg", CONFIG.jpegQuality));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("That file could not be read as an image.")); };
+    img.src = url;
+  });
+}
+
+async function handleFile(file) {
+  if (!file) return;
+  setStatus("photoStatus", "Preparing photo…");
+  try {
+    state.image = await downscale(file);
+  } catch (err) {
+    setStatus("photoStatus", err.message, "err");
+    return;
+  }
+  setStatus("photoStatus", "");
+  renderPhoto();
+  persist();
+}
+
+function renderPhoto() {
+  const has = !!state.image;
+  $("thumb").classList.toggle("hidden", !has);
+  if (has) $("thumb").src = state.image;
+  $("photoBtnText").textContent = has ? "Retake the photo" : "Photograph the Worksheet";
+}
+
+/* ---------- state scaffolding ---------- */
+function blankSample() {
+  return { fields: {}, grams: {} };
+}
+
+function ensureSamples() {
+  while (state.samples.length < CONFIG.sampleCount) state.samples.push(blankSample());
+  state.samples.forEach((s) => { s.fields = s.fields || {}; s.grams = s.grams || {}; });
+}
+
+/* Phase-3 scaffolding: once a digit classifier pre-fills cells, every edit a tech
+   makes is a labeled training sample in that lab's own handwriting. Logging is wired
+   now so the data starts accumulating the day OCR lands, not months after. */
+function recordCorrection(path, oldValue, newValue) {
+  const pf = state.prefill[path];
+  if (!pf || pf.source !== "ocr") return;
+  if (String(oldValue) === String(newValue)) return;
+  try {
+    const log = JSON.parse(localStorage.getItem(CORR_KEY) || "[]");
+    log.push({ path, was: pf.value, now: newValue, confidence: pf.confidence, at: new Date().toISOString() });
+    localStorage.setItem(CORR_KEY, JSON.stringify(log.slice(-2000)));
+  } catch (e) { /* storage full — corrections are a nice-to-have, never block entry */ }
+}
+
+/* ---------- rendering ---------- */
+function fieldHTML(def, value, idPrefix) {
+  const id = idPrefix + "_" + def.key;
+  const v = value === undefined || value === null ? "" : String(value);
+  let input;
+  if (def.type === "select") {
+    const opts = [""].concat(CONFIG[def.options] || []);
+    input = `<select id="${id}" data-f="${esc(def.key)}">` + opts.map((o) =>
+      `<option value="${esc(o)}"${o === v ? " selected" : ""}>${esc(o || "—")}</option>`).join("") + "</select>";
+  } else {
+    const t = def.type === "date" ? "date" : "text";
+    const mode = def.type === "number" ? ' inputmode="decimal"' : "";
+    input = `<input type="${t}" id="${id}" data-f="${esc(def.key)}" value="${esc(v)}"${mode}>`;
+  }
+  return `<div class="field"${def.wide ? ' style="grid-column:1/-1"' : ""}>
+      <label class="fl" for="${id}">${esc(def.label)}</label>${input}
+    </div>`;
+}
+
+function renderSheetFields() {
+  $("sheetFields").innerHTML =
+    `<div class="grid2">` +
+    CONFIG.sheetFields.map((f) => fieldHTML(f, state.sheet[f.key], "sf")).join("") +
+    `</div>`;
+  $("sheetFields").querySelectorAll("[data-f]").forEach((el) => {
+    el.addEventListener("input", () => { state.sheet[el.dataset.f] = el.value; persist(); });
+    el.addEventListener("change", () => { state.sheet[el.dataset.f] = el.value; persist(); });
+  });
+}
+
+function renderTabs() {
+  $("sampleTabs").innerHTML = state.samples.map((s, i) => {
+    const label = (s.fields.label || "").trim();
+    const filled = sampleHasData(s);
+    return `<button class="tab${i === state.active ? " on" : ""}" data-tab="${i}">
+        Sample ${i + 1}<span class="dot">${esc(label || (filled ? "in progress" : "empty"))}</span>
+      </button>`;
+  }).join("");
+  $("sampleTabs").querySelectorAll("[data-tab]").forEach((b) => {
+    b.addEventListener("click", () => {
+      state.active = parseInt(b.dataset.tab, 10);
+      persist();
+      renderAll();
+    });
+  });
+}
+
+function renderSampleFields() {
+  const sample = state.samples[state.active];
+  $("sampleTitle").textContent = "Sample " + (state.active + 1);
+  $("sampleFields").innerHTML = CONFIG.sampleFields
+    .map((f) => fieldHTML(f, sample.fields[f.key], "smp")).join("");
+  $("sampleFields").querySelectorAll("[data-f]").forEach((el) => {
+    el.addEventListener("input", () => {
+      const key = el.dataset.f;
+      recordCorrection("s" + state.active + "." + key, sample.fields[key], el.value);
+      sample.fields[key] = el.value;
+      // The TOTAL cell echoes the wash weight on every sheet we have seen; prefill it
+      // so the tech only re-keys it when the paper actually disagrees.
+      if (key === CONFIG.divisorField && !String(sample.fields.totalWt || "").trim()) {
+        sample.fields.totalWt = el.value;
+        const t = $("smp_totalWt");
+        if (t) t.value = el.value;
+      }
+      persist();
+      renderCalc();
+      renderTabs();
+    });
+  });
+}
+
+function renderSieveRows() {
+  const sample = state.samples[state.active];
+  const calc = calcSample(sample, CONFIG.sieves, CONFIG.maxLossPct);
+  const flags = sampleChecks(sample, calc, CONFIG.sieves, CONFIG.maxLossPct);
+  const badKeys = new Set(flags.filter((f) => f.level === "bad").flatMap((f) => f.keys));
+
+  let r = -1;
+  const rows = CONFIG.sieves.map((sv) => {
+    if (sv.skip) {
+      return `<tr class="skip"><td class="sv">${esc(sv.label)}</td>
+        <td class="calc">&mdash;</td><td class="calc">&mdash;</td><td class="calc">&mdash;</td></tr>`;
+    }
+    r++;
+    const row = calc.rows[r];
+    const v = sample.grams[sv.key] === undefined ? "" : sample.grams[sv.key];
+    const live = row.blank ? "" : " live";
+    return `<tr>
+        <td class="sv">${esc(sv.label)}</td>
+        <td><input inputmode="decimal" id="g_${esc(sv.key)}" data-g="${esc(sv.key)}"
+             value="${esc(v)}" class="${badKeys.has(sv.key) ? "bad" : ""}"></td>
+        <td class="calc${live}">${fmt(row.pctRet, 1)}</td>
+        <td class="calc${live}">${fmt(row.pctPass, 1)}</td>
+      </tr>`;
+  }).join("");
+
+  const panRow = `<tr>
+      <td class="sv">PAN</td>
+      <td><input inputmode="decimal" id="pan_mirror" value="${esc(sample.fields.pan || "")}"
+           class="${badKeys.has("pan") ? "bad" : ""}"></td>
+      <td class="calc">&mdash;</td><td class="calc">&mdash;</td>
+    </tr>`;
+  const totalRow = `<tr class="tot">
+      <td class="sv">TOTAL</td>
+      <td><input inputmode="decimal" id="total_mirror" value="${esc(sample.fields.totalWt || "")}"
+           class="${badKeys.has("totalWt") ? "bad" : ""}"></td>
+      <td class="calc">&mdash;</td><td class="calc">&mdash;</td>
+    </tr>`;
+
+  $("sieveBody").innerHTML = rows + panRow + totalRow;
+
+  $("sieveBody").querySelectorAll("[data-g]").forEach((el) => {
+    el.addEventListener("input", () => {
+      const key = el.dataset.g;
+      recordCorrection("s" + state.active + ".g." + key, sample.grams[key], el.value);
+      sample.grams[key] = el.value;
+      persist();
+      renderCalc();
+      renderTabs();
+    });
+  });
+  // PAN and TOTAL live in sampleFields but are keyed in the table where the tech
+  // reads them; keep both inputs pointed at the same state.
+  const mirror = (elId, key) => {
+    const el = $(elId);
+    el.addEventListener("input", () => {
+      sample.fields[key] = el.value;
+      const twin = $("smp_" + key);
+      if (twin) twin.value = el.value;
+      persist();
+      renderCalc();
+    });
+  };
+  mirror("pan_mirror", "pan");
+  mirror("total_mirror", "totalWt");
+
+  $("sampleFlags").innerHTML = flags.map((f) =>
+    `<div class="flag${f.level === "warn" ? " warn" : ""}">${esc(f.msg)}</div>`).join("");
+}
+
+function renderLoss() {
+  const calc = calcSample(state.samples[state.active], CONFIG.sieves, CONFIG.maxLossPct);
+  const line = (k, v) => `<div class="kv"><span class="k">${esc(k)}</span><span class="v">${v}</span></div>`;
+  const last = calc.rows[calc.rows.length - 1];
+  const verdict = calc.lossOk === null ? '<span class="v">&mdash;</span>'
+    : `<span class="verdict ${calc.lossOk ? "pass" : "fail"}">${calc.lossOk ? "OK" : "FAIL"}</span>`;
+
+  $("lossBox").innerHTML =
+    line("Dry Start Wt.", fmt(calc.dryStartWt, 1) || "&mdash;") +
+    line("After Wash Dry Wt.", fmt(calc.washWt, 1) || "&mdash;") +
+    line("Start Wt. − After Dry Wt.",
+      calc.dryStartWt !== null && calc.washWt !== null ? fmt(round1(calc.dryStartWt - calc.washWt, 1), 1) : "&mdash;") +
+    line("% Minus 200 (wash test)", calc.pctMinus200Wash === null ? "&mdash;" : fmt(calc.pctMinus200Wash, 1) + "%") +
+    line("% Passing No.200 (gradation)", last && last.pctPass !== null ? fmt(last.pctPass, 1) + "%" : "&mdash;") +
+    line("Aggregate loss", calc.lossG === null ? "&mdash;" : fmt(calc.lossG, 1) + " g") +
+    line("Aggregate loss %", calc.lossPct === null ? "&mdash;" : fmt(calc.lossPct, 2) + "%") +
+    `<div class="kv"><span class="k">Max ${CONFIG.maxLossPct}% loss</span>${verdict}</div>`;
+}
+
+function renderSummary() {
+  const active = state.samples.map((s, i) => ({ s, i })).filter((x) => sampleHasData(x.s));
+  const show = active.length > 1;
+  $("summaryPanel").classList.toggle("hidden", !show);
+  if (!show) return;
+
+  const calcs = active.map((a) => calcSample(a.s, CONFIG.sieves, CONFIG.maxLossPct));
+  const head = `<tr><th class="l">Sieve</th>` +
+    active.map((a) => `<th>${esc((a.s.fields.label || "").trim() || "Sample " + (a.i + 1))}</th>`).join("") +
+    `</tr>`;
+  const body = CONFIG.sieves.filter((s) => !s.skip).map((sv, r) =>
+    `<tr><td class="l">${esc(sv.label)}</td>` +
+    calcs.map((c) => `<td>${fmt(c.rows[r].pctPass, 1)}</td>`).join("") + `</tr>`).join("");
+  const loss = `<tr><td class="l"><strong>Loss %</strong></td>` +
+    calcs.map((c) => `<td>${c.lossPct === null ? "&mdash;" : fmt(c.lossPct, 2) + (c.lossOk ? "" : " !")}</td>`).join("") +
+    `</tr>`;
+
+  $("summaryTable").innerHTML = head + body + loss;
+}
+
+function renderCalc() {
+  renderSieveRows();
+  renderLoss();
+  renderSummary();
+}
+
+function renderSaved() {
+  $("saveBadge").textContent = "Saved: " + state.saved.length;
+  $("saveBadge").className = "badge" + (state.saved.length ? " has" : "");
+  $("savedList").innerHTML = state.saved.length
+    ? state.saved.map((s, i) => `<div class="qitem">
+        <div>
+          <div>${esc(s.name || "Untitled sheet")}</div>
+          <div class="meta">${esc((s.savedAt || "").slice(0, 16).replace("T", " "))}${s.image ? " · photo" : " · no photo"}</div>
+        </div>
+        <div class="acts">
+          <button class="open" data-load="${i}">Open</button>
+          <button data-del="${i}" aria-label="Delete">&times;</button>
+        </div>
+      </div>`).join("")
+    : `<div class="legend">Nothing saved yet. Sheets you save stay on this phone only.</div>`;
+
+  $("savedList").querySelectorAll("[data-load]").forEach((b) => {
+    b.addEventListener("click", () => loadSaved(parseInt(b.dataset.load, 10)));
+  });
+  $("savedList").querySelectorAll("[data-del]").forEach((b) => {
+    b.addEventListener("click", () => {
+      if (!confirm("Delete this saved sheet? It has not been exported anywhere else.")) return;
+      state.saved.splice(parseInt(b.dataset.del, 10), 1);
+      writeSaved();
+      renderSaved();
+    });
+  });
+}
+
+function renderAll() {
+  renderPhoto();
+  renderSheetFields();
+  renderTabs();
+  renderSampleFields();
+  renderCalc();
+  renderSaved();
+}
+
+/* ---------- persistence ---------- */
+function snapshot() {
+  return {
+    image: state.image,
+    sheet: state.sheet,
+    samples: state.samples,
+    active: state.active,
+    savedAt: new Date().toISOString(),
+    name: sheetName(),
+  };
+}
+
+function sheetName() {
+  const first = state.samples.find((s) => (s.fields.label || "").trim());
+  const label = first ? first.fields.label.trim() : "";
+  const bits = [label, state.sheet.projectNo, state.sheet.date].filter((x) => String(x || "").trim());
+  return bits.join(" · ") || "Untitled sheet";
+}
+
+function persist() {
+  try { localStorage.setItem(CUR_KEY, JSON.stringify(snapshot())); }
+  catch (e) { setStatus("exportStatus", "Phone storage is full — export this sheet soon.", "err"); }
+}
+
+function restore() {
+  try {
+    const cur = JSON.parse(localStorage.getItem(CUR_KEY) || "null");
+    if (cur) {
+      state.image = cur.image || null;
+      state.sheet = cur.sheet || {};
+      state.samples = Array.isArray(cur.samples) ? cur.samples : [];
+      state.active = cur.active || 0;
+    }
+    state.saved = JSON.parse(localStorage.getItem(SAVED_KEY) || "[]");
+  } catch (e) { /* corrupt storage should never block a tech from working */ }
+  ensureSamples();
+  if (state.active >= state.samples.length) state.active = 0;
+  if (!state.sheet.date) state.sheet.date = todayISO();
+}
+
+function writeSaved() {
+  try { localStorage.setItem(SAVED_KEY, JSON.stringify(state.saved)); return true; }
+  catch (e) {
+    setStatus("savedStatus", "Phone storage is full. Delete an old saved sheet and try again.", "err");
+    return false;
+  }
+}
+
+function saveSheet() {
+  state.saved.unshift(snapshot());
+  if (state.saved.length > CONFIG.maxSavedSheets) state.saved.length = CONFIG.maxSavedSheets;
+  if (writeSaved()) setStatus("savedStatus", "Saved on this phone.", "ok");
+  renderSaved();
+}
+
+function loadSaved(i) {
+  const s = state.saved[i];
+  if (!s) return;
+  if (!confirm("Open “" + (s.name || "this sheet") + "”? The sheet on screen will be replaced.")) return;
+  state.image = s.image || null;
+  state.sheet = s.sheet || {};
+  state.samples = s.samples || [];
+  state.active = 0;
+  ensureSamples();
+  persist();
+  renderAll();
+  window.scrollTo(0, 0);
+}
+
+function newSheet() {
+  if (!confirm("Start a blank sheet? Anything not saved or exported is gone.")) return;
+  state.image = null;
+  state.sheet = { date: todayISO() };
+  state.samples = [];
+  state.active = 0;
+  ensureSamples();
+  persist();
+  renderAll();
+  setStatus("exportStatus", "");
+  window.scrollTo(0, 0);
+}
+
+/* ---------- export ---------- */
+function download(filename, text, mime) {
+  const blob = new Blob([text], { type: (mime || "text/plain") + ";charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+function exportName(ext) {
+  const bits = [CONFIG.csvFilenamePrefix, state.sheet.projectNo, state.sheet.date]
+    .filter((x) => String(x || "").trim())
+    .map((x) => String(x).replace(/[^A-Za-z0-9_-]+/g, "-"));
+  return bits.join("_") + "." + ext;
+}
+
+function onExportCSV() {
+  if (!state.samples.some(sampleHasData)) {
+    setStatus("exportStatus", "Nothing to export yet — key in at least one sample.", "err");
+    return;
+  }
+  download(exportName("csv"), "﻿" + buildCSV(state.sheet, state.samples, new Date().toISOString()), "text/csv");
+  setStatus("exportStatus", "CSV downloaded.", "ok");
+}
+
+async function onCopy() {
+  const tsv = buildTSV(state.samples);
+  try {
+    await navigator.clipboard.writeText(tsv);
+    setStatus("exportStatus", "Percent-passing table copied — paste it into the spreadsheet.", "ok");
+  } catch (e) {
+    // Clipboard API needs a secure context; fall back so the tech is never stuck.
+    const ta = document.createElement("textarea");
+    ta.value = tsv;
+    ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    setStatus("exportStatus", ok ? "Copied." : "Copy failed — download the CSV instead.", ok ? "ok" : "err");
+  }
+}
+
+function onDownloadPhoto() {
+  if (!state.image) { setStatus("exportStatus", "No photo on this sheet yet.", "err"); return; }
+  const a = document.createElement("a");
+  a.href = state.image;
+  a.download = exportName("jpg");
+  document.body.appendChild(a); a.click(); a.remove();
+  setStatus("exportStatus", "Photo downloaded — keep it with the CSV.", "ok");
+}
+
+/* ---------- photo lightbox ---------- */
+function applyLb() {
+  $("lbImg").style.transform = `rotate(${state.lbRotation}deg) scale(${state.lbZoom})`;
+}
+
+function openLb() {
+  if (!state.image) return;
+  $("lbImg").src = state.image;
+  state.lbRotation = 0; state.lbZoom = 1;
+  applyLb();
+  $("lightbox").classList.remove("hidden");
+}
+
+/* ---------- wiring ---------- */
+function init() {
+  $("appTitle").textContent = CONFIG.title;
+  $("appSubtitle").textContent = CONFIG.subtitle;
+  document.title = CONFIG.title;
+
+  restore();
+  renderAll();
+
+  $("photoInput").addEventListener("change", (e) => handleFile(e.target.files[0]));
+  $("galleryInput").addEventListener("change", (e) => handleFile(e.target.files[0]));
+  $("thumb").addEventListener("click", openLb);
+
+  $("lbClose").addEventListener("click", () => $("lightbox").classList.add("hidden"));
+  $("lbRotate").addEventListener("click", () => { state.lbRotation = (state.lbRotation + 90) % 360; applyLb(); });
+  $("lbZoomIn").addEventListener("click", () => { state.lbZoom = Math.min(6, state.lbZoom * 1.4); applyLb(); });
+  $("lbZoomOut").addEventListener("click", () => { state.lbZoom = Math.max(0.5, state.lbZoom / 1.4); applyLb(); });
+
+  $("csvBtn").addEventListener("click", onExportCSV);
+  $("copyBtn").addEventListener("click", onCopy);
+  $("photoDlBtn").addEventListener("click", onDownloadPhoto);
+  $("saveBtn").addEventListener("click", saveSheet);
+  $("newBtn").addEventListener("click", newSheet);
+
+  document.querySelectorAll("[data-tog]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const el = $(b.dataset.tog);
+      const hidden = el.classList.toggle("hidden");
+      b.textContent = hidden ? "show" : "hide";
+    });
+  });
+
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
+}
+
+document.addEventListener("DOMContentLoaded", init);
+</script>
+</body>
+</html>

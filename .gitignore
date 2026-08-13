@@ -1,0 +1,10 @@
+# Never commit credentials — this app has none, and it stays that way.
+.env
+.env.*
+!.env.example
+
+.netlify/
+node_modules/
+__pycache__/
+.DS_Store
+Thumbs.db

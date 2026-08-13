@@ -1,0 +1,35 @@
+# netlify.toml — pure static deploy. There is no API key in this app and no
+# Netlify Function, because nothing leaves the phone.
+#
+# Folder layout for a drag-and-drop deploy:
+#
+#   GradationCapture/
+#   ├── index.html
+#   ├── netlify.toml       <- this file
+#   ├── manifest.json
+#   ├── sw.js
+#   ├── icon-192.png
+#   └── icon-512.png
+#
+# Drag the WHOLE GradationCapture folder onto the Netlify deploy area.
+
+[build]
+  publish = "."
+
+# The service worker must never be served stale, or phones keep running the old
+# app forever. Everything else can cache hard.
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/*.png"
+  [headers.values]
+    Cache-Control = "public, max-age=604800"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "no-referrer"

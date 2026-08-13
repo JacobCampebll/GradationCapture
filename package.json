@@ -1,0 +1,15 @@
+{
+  "name": "kytc-gradation-capture",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Key a KYTC Worksheet for Bituminous Mixtures off the paper, check the math, export it. Runs entirely offline — no API, no key, no server.",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "oracle": "python3 gradation.py",
+    "icons": "python3 tools/make-icons.py",
+    "dev": "netlify dev",
+    "deploy": "netlify deploy",
+    "deploy:prod": "netlify deploy --prod"
+  }
+}
