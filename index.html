@@ -2038,6 +2038,46 @@ function readSheet(rgba, w, h, sampleIndex) {
     snapped: snap.snapped, gray: g, w: gw, h: gh };
 }
 
+/* Read the same photo at two zooms and keep, cell by cell, whichever pass was
+   more confident. Different scales pixelate a pencil stroke differently, and a
+   digit that smears at one scale often resolves at the other. */
+function readImageEnsemble(img, sampleIndex) {
+  const passes = [];
+  let failure = null;
+  for (const targetW of [1400, 1800]) {
+    const W = Math.min(targetW, img.naturalWidth);
+    const H = Math.round(img.naturalHeight * W / img.naturalWidth);
+    const c = document.createElement("canvas");
+    c.width = W; c.height = H;
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, W, H);
+    const out = readSheet(ctx.getImageData(0, 0, W, H).data, W, H, sampleIndex);
+    if (out.ok) passes.push(out); else failure = out;
+  }
+  if (!passes.length) return failure || { ok: false, reason: "could not read the photo" };
+  if (passes.length === 1) return passes[0];
+
+  const [a, b] = passes;
+  // Confidence alone barely discriminates, so shape joins the vote: a grams
+  // value has two to five digits, and a one-digit read is almost always a
+  // fragment of something the other scale caught whole.
+  const score = (r) => {
+    const n = r.text.replace(".", "").length;
+    return r.confidence + (n >= 3 && n <= 5 ? 0.6 : n === 2 ? 0.2 : 0);
+  };
+  const merged = a.results.map((ra, i) => {
+    const rb = b.results[i];
+    if (ra.skip) return ra;
+    if (!rb || !rb.text) return ra;
+    if (!ra.text) return rb;
+    if (ra.text === rb.text) {
+      return Object.assign({}, ra, { confidence: Math.max(ra.confidence, rb.confidence) });
+    }
+    return (score(rb) > score(ra)) ? rb : ra;
+  });
+  return Object.assign({}, a, { results: merged });
+}
+
 /* ---------- RECOGNITION RESULTS -> THE SHEET ----------------------------
    Where a value came from is part of the record. A number the reader was sure
    of, a number the solver overrode, and a number the tech typed are three
@@ -3172,14 +3212,7 @@ async function onRead() {
       i.onerror = () => rej(new Error("photo could not be opened"));
       i.src = state.image;
     });
-    const W = Math.min(1800, img.naturalWidth);
-    const H = Math.round(img.naturalHeight * W / img.naturalWidth);
-    const c = document.createElement("canvas");
-    c.width = W; c.height = H;
-    const ctx = c.getContext("2d", { willReadFrequently: true });
-    ctx.drawImage(img, 0, 0, W, H);
-
-    const out = readSheet(ctx.getImageData(0, 0, W, H).data, W, H, state.active);
+    const out = readImageEnsemble(img, state.active);
     if (!out.ok) {
       setStatus("photoStatus", out.reason + " Key the values in by hand.", "err");
       return;

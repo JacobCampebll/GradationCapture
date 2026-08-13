@@ -40,17 +40,10 @@ const rows = await page.evaluate(async (args) => {
       img.onload = res; img.onerror = rej;
       img.src = "test/fixtures/photos/" + name + ".jpg";
     });
-    // Same conditions as the app: the stored photo, capped like onRead caps it.
-    const W = Math.min(1800, img.naturalWidth);
-    const H = Math.round(img.naturalHeight * W / img.naturalWidth);
-    const c = document.createElement("canvas");
-    c.width = W; c.height = H;
-    const ctx = c.getContext("2d", { willReadFrequently: true });
-    ctx.drawImage(img, 0, 0, W, H);
-
+    // Same path the Generate button takes: the two-scale ensemble.
     const t0 = performance.now();
     let r;
-    try { r = readSheet(ctx.getImageData(0, 0, W, H).data, W, H, 0); }
+    try { r = readImageEnsemble(img, 0); }
     catch (e) { out.push({ name, err: "THREW " + e.message }); continue; }
     const ms = Math.round(performance.now() - t0);
     if (!r.ok) { out.push({ name, err: r.reason, ms }); continue; }

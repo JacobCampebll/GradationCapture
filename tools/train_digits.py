@@ -121,13 +121,61 @@ def thickness(batch, rng):
     return out
 
 
+def elastic(batch, rng):
+    """Coarse random displacement fields, bilinearly upsampled — wobbles strokes
+    the way a hand does. The handoff called for this and it was skipped."""
+    n = batch.shape[0]
+    amp = rng.uniform(0.5, 2.2, (n, 1, 1)).astype(np.float32)
+    coarse = rng.normal(0, 1, (n, 2, 4, 4)).astype(np.float32)
+    # bilinear 4x4 -> 28x28
+    idx = np.linspace(0, 3, 28)
+    i0 = np.floor(idx).astype(int); i1 = np.minimum(i0 + 1, 3); f = (idx - i0).astype(np.float32)
+    up = coarse[:, :, i0][:, :, :, i0]
+    up = (coarse[:, :, i0][:, :, :, i0] * (1 - f)[None, None, :, None] +
+          coarse[:, :, i1][:, :, :, i0] * f[None, None, :, None])
+    up = (up * (1 - f)[None, None, None, :] +
+          (coarse[:, :, i0][:, :, :, i1] * (1 - f)[None, None, :, None] +
+           coarse[:, :, i1][:, :, :, i1] * f[None, None, :, None]) * f[None, None, None, :])
+    dy = up[:, 0] * amp
+    dx = up[:, 1] * amp
+    ys, xs = np.mgrid[0:28, 0:28]
+    src_y = ys[None] + dy
+    src_x = xs[None] + dx
+    y0 = np.floor(src_y).astype(np.int32); x0 = np.floor(src_x).astype(np.int32)
+    fy = (src_y - y0).astype(np.float32); fx = (src_x - x0).astype(np.float32)
+
+    def at(yy, xx):
+        ok = (yy >= 0) & (yy < 28) & (xx >= 0) & (xx < 28)
+        flat = batch.reshape(n, -1)
+        idx2 = (np.clip(yy, 0, 27) * 28 + np.clip(xx, 0, 27)).reshape(n, -1)
+        return np.where(ok.reshape(n, -1), np.take_along_axis(flat, idx2, axis=1), 0.0).reshape(n, 28, 28)
+
+    out = (at(y0, x0) * (1 - fx) * (1 - fy) + at(y0, x0 + 1) * fx * (1 - fy) +
+           at(y0 + 1, x0) * (1 - fx) * fy + at(y0 + 1, x0 + 1) * fx * fy)
+    return out.astype(np.float32)
+
+
 def augment(batch, rng):
     out = warp(batch, rng)
+    pick = rng.random(batch.shape[0])
+    el = elastic(out, rng)
+    out[pick < 0.5] = el[pick < 0.5]
     out = thickness(out, rng)
+
+    # Half of every batch is snapped to hard black-and-white. The app does not
+    # feed the model photographs — it feeds binarised cutouts from inkMask, all
+    # ink 1.0 and all paper 0.0. A model trained only on MNIST's soft grayscale
+    # strokes is tested on a distribution it has never seen; banks train their
+    # readers on real check images for exactly this reason.
+    b = rng.random(batch.shape[0])
+    t = rng.uniform(0.25, 0.55, (batch.shape[0], 1, 1)).astype(np.float32)
+    hard = (out > t).astype(np.float32)
+    out[b < 0.5] = hard[b < 0.5]
+
     gain = rng.uniform(0.6, 1.3, (out.shape[0], 1, 1)).astype(np.float32)
     bias = rng.uniform(-0.08, 0.08, (out.shape[0], 1, 1)).astype(np.float32)
-    out = out * gain + bias
-    out += rng.normal(0, 0.05, out.shape).astype(np.float32)
+    soft = np.clip(out * gain + bias + rng.normal(0, 0.05, out.shape).astype(np.float32), 0, 1)
+    out[b >= 0.5] = soft[b >= 0.5]
     return np.clip(out, 0.0, 1.0)
 
 

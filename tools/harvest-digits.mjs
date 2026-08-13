@@ -41,7 +41,10 @@ const samples = await page.evaluate(async (TRUTHS) => {
       img.onload = res; img.onerror = rej;
       img.src = "test/fixtures/photos/" + name + ".jpg";
     });
-    const W = Math.min(1800, img.naturalWidth);
+    // Every scale is a different pixelisation of the same pencil stroke —
+    // three scales triple the training set from the same photographs.
+    for (const targetW of [1200, 1500, 1800]) {
+    const W = Math.min(targetW, img.naturalWidth);
     const H = Math.round(img.naturalHeight * W / img.naturalWidth);
     const c = document.createElement("canvas");
     c.width = W; c.height = H;
@@ -84,6 +87,7 @@ const samples = await page.evaluate(async (TRUTHS) => {
         });
       });
     });
+    }
   }
   return out;
 }, TRUTHS);
