@@ -1,5 +1,5 @@
 // BUMP THIS on every deploy or phones will keep serving the old app.
-const CACHE = "kytc-gradation-v1";
+const CACHE = "kytc-gradation-v2";
 const ASSETS = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (e) => {

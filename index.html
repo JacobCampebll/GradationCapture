@@ -227,13 +227,19 @@
   <!-- ============ EXPORT ============ -->
   <section class="panel">
     <h2>Export</h2>
+    <button class="btn go" id="pdfBtn">Download PDF</button>
     <div class="btnrow">
-      <button class="btn go" id="csvBtn">Download CSV</button>
+      <button class="btn primary" id="csvBtn">Download CSV</button>
       <button class="btn primary" id="copyBtn">Copy Table</button>
     </div>
-    <button class="btn ghost" id="photoDlBtn">Download the photo</button>
+    <button class="btn ghost" id="photoDlBtn">Download the photo on its own</button>
     <button class="btn ghost" id="saveBtn">Save this sheet on the phone</button>
     <div class="status" id="exportStatus"></div>
+    <div class="legend">
+      The PDF is built the moment you press the button, stamped with that time, and handed
+      straight to your downloads with the photo inside it. It is never stored in the app &mdash;
+      leave the page and it is gone, so press it again whenever you want a current copy.
+    </div>
   </section>
 
   <!-- ============ SAVED ============ -->
@@ -346,6 +352,23 @@ const CONFIG = {
   ],
 
   csvFilenamePrefix: "KYTC-gradation",
+
+  // ---- PDF PAGE SETUP -----------------------------------------------------
+  // US Letter, in points. The PDF is written byte by byte in this file — there
+  // is no library to load — so these are the only knobs.
+  pdf: {
+    pageW: 612,
+    pageH: 792,
+    margin: 40,
+    rowH: 15,
+    // Strip at the foot of every page for the generated stamp and page number.
+    // Content is never laid into it.
+    footerH: 18,
+    // Right-hand edge of each numeric column, measured from the left of the page.
+    colGrams: 320,
+    colRet: 440,
+    colPass: 560,
+  },
 };
 
 /* ==============================================================
@@ -593,6 +616,427 @@ function buildTSV(samples) {
     lines.push([sv.label].concat(calcs.map((c) => fmt(c.rows[r].pctPass, 1))).join("\t"));
   });
   return lines.join("\n");
+}
+
+/* ---------- PDF ----------------------------------------------------------
+   The PDF is assembled here, byte by byte, using the two fonts every reader
+   already has. No library, no CDN, no network — same rule as the rest of the app.
+
+   It is built when the button is pressed and handed straight to the download.
+   Nothing is cached, queued or written to storage, so leaving the page discards
+   it and the next press produces a fresh file stamped with the new time.
+   -------------------------------------------------------------------------- */
+
+/* Helvetica advance widths (AFM, /1000 em) for ASCII 32..126, used to right-align
+   the numeric columns. Helvetica-Bold shares the 556 digit width, so figures line
+   up under bold headings too; bold prose is left-aligned, where it cannot show. */
+const HELV_W = [
+  278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278,
+  556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556,
+  1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778,
+  667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556,
+  333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556,
+  556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584,
+];
+
+/* Encode a string for a PDF text object: fold the few typographic characters the
+   app uses into WinAnsi, drop anything else to '?', and escape the three
+   characters that would otherwise end the string early. */
+function pdfEsc(s) {
+  const WINANSI = {
+    "–": 150, "—": 151, "‘": 145, "’": 146, "“": 147,
+    "”": 148, "•": 149, "…": 133, "°": 176, "·": 183,
+    "±": 177, "×": 215, "−": 45,
+  };
+  let out = "";
+  for (const ch of String(s === null || s === undefined ? "" : s)) {
+    let code = WINANSI[ch] !== undefined ? WINANSI[ch] : ch.charCodeAt(0);
+    if (code > 255) code = 63;
+    const b = String.fromCharCode(code);
+    out += (b === "\\" || b === "(" || b === ")") ? "\\" + b : b;
+  }
+  return out;
+}
+
+function pdfWidth(s, size) {
+  const str = String(s === null || s === undefined ? "" : s);
+  let total = 0;
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    total += (c >= 32 && c <= 126) ? HELV_W[c - 32] : 556;
+  }
+  return total * size / 1000;
+}
+
+/* Minimal PDF writer. Coordinates are top-down (y grows downward) because that is
+   how the report reads; the flip to PDF's bottom-left origin happens here. */
+function pdfBuilder(opts) {
+  const M = opts.margin;
+  const pages = [];
+  const images = [];
+  let target = -1; // -1 = draw on the last page; otherwise the page stamp() is on
+
+  const api = {
+    y: 0,
+    left: M,
+    right: opts.pageW - M,
+    width: opts.pageW - 2 * M,
+    center: opts.pageW / 2,
+    bottom: opts.pageH - M,
+    // Everything except the footer has to fit above this line.
+    contentBottom: opts.pageH - M - (opts.footerH || 0),
+    onPage: null,
+  };
+
+  function cur() {
+    if (!pages.length) api.newPage();
+    return target >= 0 ? pages[target] : pages[pages.length - 1];
+  }
+
+  function flip(y) {
+    return (opts.pageH - y).toFixed(2);
+  }
+
+  api.newPage = function () {
+    pages.push({ ops: [], uses: [] });
+    api.y = M;
+    if (api.onPage) api.onPage(pages.length);
+    return pages[pages.length - 1];
+  };
+
+  /* Start a new page if `h` more points will not fit above the footer. */
+  api.ensure = function (h) {
+    if (!pages.length || api.y + h > api.contentBottom) { api.newPage(); return true; }
+    return false;
+  };
+
+  api.text = function (x, y, s, o) {
+    const op = o || {};
+    const size = op.size || 9;
+    const c = op.color || [0, 0, 0];
+    let tx = x;
+    if (op.align === "right") tx = x - pdfWidth(s, size);
+    else if (op.align === "center") tx = x - pdfWidth(s, size) / 2;
+    cur().ops.push(`BT /${op.bold ? "FB" : "FR"} ${size} Tf ${c[0]} ${c[1]} ${c[2]} rg ` +
+      `1 0 0 1 ${tx.toFixed(2)} ${flip(y)} Tm (${pdfEsc(s)}) Tj ET`);
+  };
+
+  api.line = function (x1, y1, x2, y2, w, c) {
+    const col = c || [0.78, 0.80, 0.84];
+    cur().ops.push(`${col[0]} ${col[1]} ${col[2]} RG ${w || 0.5} w ` +
+      `${x1.toFixed(2)} ${flip(y1)} m ${x2.toFixed(2)} ${flip(y2)} l S`);
+  };
+
+  api.rect = function (x, y, w, h, c) {
+    cur().ops.push(`${c[0]} ${c[1]} ${c[2]} rg ` +
+      `${x.toFixed(2)} ${flip(y + h)} ${w.toFixed(2)} ${h.toFixed(2)} re f`);
+  };
+
+  api.image = function (photo, x, y, w, h) {
+    const name = "Im" + (images.length + 1);
+    images.push({ name, bytes: photo.bytes, width: photo.width, height: photo.height });
+    cur().uses.push(name);
+    cur().ops.push(`q ${w.toFixed(2)} 0 0 ${h.toFixed(2)} ${x.toFixed(2)} ${flip(y + h)} cm /${name} Do Q`);
+  };
+
+  /* Run fn(pageNumber, total) once per page — for footers, which need the total. */
+  api.stamp = function (fn) {
+    const total = pages.length;
+    for (let i = 0; i < total; i++) { target = i; fn(i + 1, total); }
+    target = -1;
+  };
+
+  api.finish = function (meta) {
+    const nImg = images.length;
+    const firstPageId = 5 + nImg;
+    const pageIds = pages.map((_, i) => firstPageId + i * 2);
+    const infoId = firstPageId + pages.length * 2;
+    const parts = [];
+
+    parts.push([1, ["<< /Type /Catalog /Pages 2 0 R >>"]]);
+    parts.push([2, [`<< /Type /Pages /Count ${pages.length} /Kids [` +
+      pageIds.map((i) => i + " 0 R").join(" ") + "] >>"]]);
+    parts.push([3, ["<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"]]);
+    parts.push([4, ["<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>"]]);
+
+    images.forEach((im, i) => {
+      parts.push([5 + i, [
+        `<< /Type /XObject /Subtype /Image /Width ${im.width} /Height ${im.height} ` +
+        `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode ` +
+        `/Length ${im.bytes.length} >>\nstream\n`,
+        im.bytes,
+        "\nendstream",
+      ]]);
+    });
+
+    pages.forEach((p, i) => {
+      const content = p.ops.join("\n");
+      const xo = p.uses.length
+        ? " /XObject << " + p.uses.map((n) =>
+            `/${n} ${5 + images.findIndex((im) => im.name === n)} 0 R`).join(" ") + " >>"
+        : "";
+      parts.push([pageIds[i], [`<< /Type /Page /Parent 2 0 R ` +
+        `/MediaBox [0 0 ${opts.pageW} ${opts.pageH}] ` +
+        `/Resources << /Font << /FR 3 0 R /FB 4 0 R >>${xo} >> ` +
+        `/Contents ${pageIds[i] + 1} 0 R >>`]]);
+      parts.push([pageIds[i] + 1, [`<< /Length ${content.length} >>\nstream\n${content}\nendstream`]]);
+    });
+
+    parts.push([infoId, [`<< /Title (${pdfEsc(meta.title)}) /Producer (${pdfEsc(meta.producer)}) ` +
+      `/CreationDate (${meta.date}) >>`]]);
+
+    // Assemble, recording the byte offset of every object for the xref table.
+    const chunks = [];
+    const offsets = {};
+    let offset = 0;
+    const put = (x) => {
+      let b = x;
+      if (typeof x === "string") {
+        b = new Uint8Array(x.length);
+        for (let i = 0; i < x.length; i++) b[i] = x.charCodeAt(i) & 255;
+      }
+      chunks.push(b);
+      offset += b.length;
+    };
+
+    put("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n");
+    parts.sort((a, b) => a[0] - b[0]);
+    parts.forEach(([id, cs]) => {
+      offsets[id] = offset;
+      put(id + " 0 obj\n");
+      cs.forEach(put);
+      put("\nendobj\n");
+    });
+
+    const xrefAt = offset;
+    const size = parts.length + 1;
+    let xref = `xref\n0 ${size}\n0000000000 65535 f \n`;
+    for (let i = 1; i < size; i++) xref += String(offsets[i]).padStart(10, "0") + " 00000 n \n";
+    put(xref);
+    put(`trailer\n<< /Size ${size} /Root 1 0 R /Info ${infoId} 0 R >>\n` +
+      `startxref\n${xrefAt}\n%%EOF\n`);
+
+    const out = new Uint8Array(offset);
+    let at = 0;
+    chunks.forEach((c) => { out.set(c, at); at += c.length; });
+    return out;
+  };
+
+  return api;
+}
+
+/* PDF date format: D:YYYYMMDDHHmmSS+HH'mm' */
+function pdfDate(d) {
+  const p = (n) => String(Math.floor(Math.abs(n))).padStart(2, "0");
+  const off = -d.getTimezoneOffset();
+  return "D:" + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) +
+    p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) +
+    (off >= 0 ? "+" : "-") + p(off / 60) + "'" + p(off % 60) + "'";
+}
+
+function stampText(d) {
+  return d.toLocaleString(undefined, {
+    year: "numeric", month: "short", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  });
+}
+
+/* Lay the worksheet out as a PDF and return the bytes. */
+function buildPDFReport(sheet, samples, generatedAt, photo) {
+  const P = CONFIG.pdf;
+  const GREY = [0.42, 0.47, 0.53];
+  const RULE = [0.80, 0.83, 0.86];
+  const BAND = [0.93, 0.95, 0.97];
+  const RED = [0.72, 0.11, 0.14];
+  const GREEN = [0.11, 0.45, 0.20];
+  const b = pdfBuilder(P);
+  const when = stampText(generatedAt);
+
+  b.onPage = function (n) {
+    if (n === 1) {
+      b.y += 4;
+      b.text(b.center, b.y, "KENTUCKY TRANSPORTATION CABINET", { size: 12, bold: true, align: "center" });
+      b.y += 13;
+      b.text(b.center, b.y, "Division of Materials", { size: 9, align: "center", color: GREY });
+      b.y += 16;
+      b.text(b.center, b.y, "WORKSHEET FOR BITUMINOUS MIXTURES", { size: 11, bold: true, align: "center" });
+      b.y += 12;
+      b.line(b.left, b.y, b.right, b.y, 1, RULE);
+      b.y += 14;
+    } else {
+      b.text(b.left, b.y + 2, "KYTC Worksheet for Bituminous Mixtures", { size: 8, color: GREY });
+      b.text(b.right, b.y + 2, when, { size: 8, align: "right", color: GREY });
+      b.y += 8;
+      b.line(b.left, b.y, b.right, b.y, 0.5, RULE);
+      b.y += 14;
+    }
+  };
+
+  b.newPage();
+
+  // Generated stamp — the reason this file exists is that it is a snapshot of one moment.
+  b.text(b.left, b.y, "Generated " + when, { size: 8.5, color: GREY });
+  b.text(b.right, b.y, "Keyed and checked on the phone from the photographed sheet",
+    { size: 8.5, align: "right", color: GREY });
+  b.y += 18;
+
+  // ---- sheet info, three columns ----
+  b.text(b.left, b.y, "SHEET INFO", { size: 9, bold: true });
+  b.y += 12;
+  const colW = b.width / 3;
+  CONFIG.sheetFields.forEach((f, i) => {
+    const col = i % 3;
+    const x = b.left + col * colW;
+    const y = b.y + Math.floor(i / 3) * 26;
+    b.text(x, y, f.label.toUpperCase(), { size: 6.5, color: GREY });
+    b.text(x, y + 11, String((sheet || {})[f.key] || "—"), { size: 9.5 });
+  });
+  b.y += Math.ceil(CONFIG.sheetFields.length / 3) * 26 + 6;
+
+  // ---- one block per sample that was actually keyed in ----
+  const used = samples.map((s, i) => ({ s, i })).filter((x) => sampleHasData(x.s));
+  const rowCount = CONFIG.sieves.length + 2; // sieves (incl. the struck row) + PAN + TOTAL
+
+  used.forEach(({ s, i }) => {
+    const calc = calcSample(s, CONFIG.sieves, CONFIG.maxLossPct);
+    const flags = sampleChecks(s, calc, CONFIG.sieves, CONFIG.maxLossPct);
+    const meta = CONFIG.sampleFields.filter((f) => f.key !== "label");
+    const metaH = Math.ceil(meta.length / 3) * 24;
+    b.ensure(20 + metaH + 20 + rowCount * P.rowH + 58 + flags.length * 11);
+
+    b.rect(b.left, b.y - 3, b.width, 17, BAND);
+    b.text(b.left + 5, b.y + 9, "SAMPLE " + (i + 1), { size: 9.5, bold: true });
+    const label = String((s.fields || {}).label || "").trim();
+    if (label) b.text(b.right - 5, b.y + 9, label, { size: 9.5, bold: true, align: "right" });
+    b.y += 26;
+
+    meta.forEach((f, k) => {
+      const x = b.left + (k % 3) * colW;
+      const y = b.y + Math.floor(k / 3) * 24;
+      b.text(x, y, f.label.toUpperCase(), { size: 6.5, color: GREY });
+      b.text(x, y + 10, String((s.fields || {})[f.key] || "—"), { size: 9 });
+    });
+    b.y += metaH + 4;
+
+    // table head
+    b.text(b.left, b.y, "SIEVE SIZES", { size: 6.5, color: GREY });
+    b.text(P.colGrams, b.y, "GRAMS RETAINED", { size: 6.5, align: "right", color: GREY });
+    b.text(P.colRet, b.y, "PERCENT RETAINED", { size: 6.5, align: "right", color: GREY });
+    b.text(P.colPass, b.y, "PERCENT PASSING", { size: 6.5, align: "right", color: GREY });
+    b.y += 4;
+    b.line(b.left, b.y, b.right, b.y, 0.8, RULE);
+    b.y += P.rowH - 3;
+
+    let r = 0;
+    CONFIG.sieves.forEach((sv) => {
+      if (sv.skip) {
+        // Struck out on the paper form; carried through so the printed page matches it row for row.
+        b.text(b.left, b.y, sv.label, { size: 8.5, color: GREY });
+        [P.colGrams, P.colRet, P.colPass].forEach((x) =>
+          b.text(x, b.y, "--------", { size: 8.5, align: "right", color: GREY }));
+      } else {
+        const row = calc.rows[r++];
+        b.text(b.left, b.y, sv.label, { size: 8.5 });
+        b.text(P.colGrams, b.y, row.grams === null ? "" : fmt(row.grams, 1), { size: 8.5, align: "right" });
+        b.text(P.colRet, b.y, fmt(row.pctRet, 1), { size: 8.5, align: "right" });
+        b.text(P.colPass, b.y, fmt(row.pctPass, 1), { size: 8.5, align: "right" });
+      }
+      b.line(b.left, b.y + 4, b.right, b.y + 4, 0.3, [0.90, 0.92, 0.94]);
+      b.y += P.rowH;
+    });
+
+    b.text(b.left, b.y, "PAN", { size: 8.5 });
+    b.text(P.colGrams, b.y, fmt(calc.pan, 1), { size: 8.5, align: "right" });
+    b.line(b.left, b.y + 4, b.right, b.y + 4, 0.3, [0.90, 0.92, 0.94]);
+    b.y += P.rowH;
+
+    b.text(b.left, b.y, "TOTAL", { size: 8.5, bold: true });
+    b.text(P.colGrams, b.y, fmt(calc.totalWt, 1), { size: 8.5, bold: true, align: "right" });
+    b.line(b.left, b.y + 4, b.right, b.y + 4, 0.8, RULE);
+    b.y += P.rowH + 6;
+
+    // wash + loss
+    const bits = [
+      ["Dry Start Wt.", fmt(calc.dryStartWt, 1) || "—"],
+      ["After Wash Dry Wt.", fmt(calc.washWt, 1) || "—"],
+      ["% Minus 200 (wash)", calc.pctMinus200Wash === null ? "—" : fmt(calc.pctMinus200Wash, 1) + "%"],
+      ["Aggregate loss", calc.lossG === null ? "—" : fmt(calc.lossG, 1) + " g"],
+      ["Aggregate loss %", calc.lossPct === null ? "—" : fmt(calc.lossPct, 2) + "%"],
+    ];
+    bits.forEach((kv, k) => {
+      const x = b.left + k * (b.width / 5);
+      b.text(x, b.y, kv[0].toUpperCase(), { size: 6.5, color: GREY });
+      b.text(x, b.y + 11, kv[1], { size: 9 });
+    });
+    b.y += 24;
+
+    const verdict = calc.lossOk === null ? null : calc.lossOk;
+    b.text(b.left, b.y, `Maximum loss of aggregate on extracted gradation ${CONFIG.maxLossPct}%`,
+      { size: 8, color: GREY });
+    if (verdict !== null) {
+      const word = verdict ? "OK" : "FAIL";
+      const w = pdfWidth(word, 8) + 14;
+      b.rect(b.right - w, b.y - 8, w, 13, verdict ? GREEN : RED);
+      b.text(b.right - w / 2, b.y + 1, word, { size: 8, bold: true, align: "center", color: [1, 1, 1] });
+    }
+    b.y += 14;
+
+    flags.forEach((f) => {
+      b.text(b.left, b.y, (f.level === "bad" ? "FLAGGED: " : "NOTE: ") + f.msg,
+        { size: 7.5, color: f.level === "bad" ? RED : GREY });
+      b.y += 11;
+    });
+    b.y += 14;
+  });
+
+  // ---- the photo is the record, so it travels inside the file ----
+  if (photo) {
+    b.newPage();
+    b.text(b.left, b.y, "ORIGINAL WORKSHEET PHOTO", { size: 9, bold: true });
+    b.y += 6;
+    b.line(b.left, b.y, b.right, b.y, 0.5, RULE);
+    b.y += 12;
+    const availH = b.contentBottom - b.y - 14; // leaves room for the caption
+    const scale = Math.min(b.width / photo.width, availH / photo.height);
+    const w = photo.width * scale;
+    const h = photo.height * scale;
+    b.image(photo, b.left + (b.width - w) / 2, b.y, w, h);
+    b.y += h + 11;
+    b.text(b.center, b.y, "Photographed on site. If a value is ever disputed, this settles it.",
+      { size: 7.5, align: "center", color: GREY });
+  }
+
+  b.stamp((n, total) => {
+    b.line(b.left, b.bottom - 12, b.right, b.bottom - 12, 0.5, RULE);
+    b.text(b.left, b.bottom - 3, "Generated " + when + " — not a substitute for the signed paper sheet",
+      { size: 7, color: GREY });
+    b.text(b.right, b.bottom - 3, `Page ${n} of ${total}`, { size: 7, align: "right", color: GREY });
+  });
+
+  return b.finish({
+    title: "KYTC Worksheet for Bituminous Mixtures",
+    producer: CONFIG.title,
+    date: pdfDate(generatedAt),
+  });
+}
+
+/* Pull the raw JPEG bytes and true pixel size out of the stored data URL, so the
+   photo can be embedded with /DCTDecode rather than re-encoded. */
+function loadPhotoBytes(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const comma = String(dataUrl || "").indexOf(",");
+    if (comma < 0 || !/^data:image\/jpe?g;base64/.test(dataUrl)) {
+      reject(new Error("Photo is not a JPEG data URL."));
+      return;
+    }
+    const bin = atob(dataUrl.slice(comma + 1));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const img = new Image();
+    img.onload = () => resolve({ bytes, width: img.naturalWidth, height: img.naturalHeight });
+    img.onerror = () => reject(new Error("Photo could not be measured."));
+    img.src = dataUrl;
+  });
 }
 
 /* ---------- image downscaling ---------- */
@@ -970,13 +1414,22 @@ function newSheet() {
 }
 
 /* ---------- export ---------- */
-function download(filename, text, mime) {
-  const blob = new Blob([text], { type: (mime || "text/plain") + ";charset=utf-8" });
+/* Hand a file straight to the browser's download and let go of it. Nothing
+   generated here is cached, queued or written to storage: the bytes exist for the
+   length of this call, the object URL is revoked behind them, and leaving the page
+   discards everything. Press the button again and you get a fresh file stamped
+   with the new time. */
+function downloadBytes(filename, data, mime) {
+  const blob = new Blob([data], { type: mime || "application/octet-stream" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = filename;
+  a.href = url; a.download = filename; a.rel = "noopener";
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+function download(filename, text, mime) {
+  downloadBytes(filename, text, (mime || "text/plain") + ";charset=utf-8");
 }
 
 function exportName(ext) {
@@ -993,6 +1446,32 @@ function onExportCSV() {
   }
   download(exportName("csv"), "﻿" + buildCSV(state.sheet, state.samples, new Date().toISOString()), "text/csv");
   setStatus("exportStatus", "CSV downloaded.", "ok");
+}
+
+async function onExportPDF() {
+  if (!state.samples.some(sampleHasData)) {
+    setStatus("exportStatus", "Nothing to put in a PDF yet — key in at least one sample.", "err");
+    return;
+  }
+  $("pdfBtn").disabled = true;
+  setStatus("exportStatus", "Building the PDF…");
+  try {
+    let photo = null;
+    if (state.image) {
+      try { photo = await loadPhotoBytes(state.image); }
+      catch (e) { photo = null; } // a bad photo must never cost the tech the report
+    }
+    const at = new Date();
+    downloadBytes(exportName("pdf"), buildPDFReport(state.sheet, state.samples, at, photo),
+      "application/pdf");
+    setStatus("exportStatus",
+      "PDF downloaded, stamped " + stampText(at) +
+      (photo ? " (photo included)." : ".") + " Nothing is kept on the phone.", "ok");
+  } catch (err) {
+    setStatus("exportStatus", "Could not build the PDF: " + err.message, "err");
+  } finally {
+    $("pdfBtn").disabled = false;
+  }
 }
 
 async function onCopy() {
@@ -1052,6 +1531,7 @@ function init() {
   $("lbZoomIn").addEventListener("click", () => { state.lbZoom = Math.min(6, state.lbZoom * 1.4); applyLb(); });
   $("lbZoomOut").addEventListener("click", () => { state.lbZoom = Math.max(0.5, state.lbZoom / 1.4); applyLb(); });
 
+  $("pdfBtn").addEventListener("click", onExportPDF);
   $("csvBtn").addEventListener("click", onExportCSV);
   $("copyBtn").addEventListener("click", onCopy);
   $("photoDlBtn").addEventListener("click", onDownloadPhoto);

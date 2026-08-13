@@ -2,7 +2,8 @@
 
 Phone app for the KYTC **Worksheet for Bituminous Mixtures**. Photograph the sheet, key the
 cumulative grams-retained column while zooming the photo, and the app computes % retained,
-% passing and the aggregate-loss check — then exports a CSV or a paste-ready table.
+% passing and the aggregate-loss check — then exports a timestamped PDF, a CSV, or a
+paste-ready table.
 
 Runs entirely on the phone. **No API, no key, no server, no network call of any kind.** It
 installs to the home screen and works with no signal in the lab.
@@ -17,6 +18,7 @@ installs to the home screen and works with no signal in the lab.
    starting at the 12.5mm row, then `1443.6` in PAN.
 4. You should see `9.6 / 90.4` on the 12.5mm row, `93.5 / 6.5` on the No.200 row, and
    **Aggregate loss 3.4 g = 0.23% — OK**.
+5. Press **Download PDF** — you get the whole worksheet, stamped with the current time.
 
 That is the 8/13/26 "KYTC slab 1" sheet, hand-verified. If those numbers appear, the app is good.
 
@@ -32,8 +34,25 @@ That is the 8/13/26 "KYTC slab 1" sheet, hand-verified. If those numbers appear,
 | **Loss check** | `After Wash Dry Wt. − PAN`, against the 1.5% maximum printed on the form. Pass/fail is shown, never left for the reader to work out. |
 | **Constraint checks** | Cumulative weights that go backwards, PAN below the last sieve or above the sample weight, a TOTAL that disagrees with the wash weight, a sieve heavier than the whole sample, loss over the limit. Offending cells turn red with a plain-English reason. |
 | **% Minus 200** | Both numbers are reported and labelled: the wash-test figure (needs Dry Start Wt.) and the gradation's % passing the No.200. They are different numbers and get mixed up on paper. |
+| **PDF** | A printable copy of the worksheet with the photo inside it, built the moment you press the button and stamped with that time. See below. |
 | **Export** | CSV download (Excel-safe, BOM + CRLF), "Copy Table" for pasting % passing straight into a spreadsheet, and a photo download so the record travels with the data. |
 | **Offline** | PWA. Work in progress autosaves; up to 8 finished sheets can be parked on the phone. |
+
+### The PDF
+
+Press **Download PDF** and the file is assembled right then, stamped with that moment in both
+the page footer and the PDF's own metadata, and handed straight to your downloads. It lays out
+like the paper form — same sieve rows in the same order, including the struck-out 6mm row — with
+the loss verdict as an OK/FAIL chip, any flagged rows spelled out underneath, and the original
+photo on its own page at the end.
+
+**It is never stored.** The bytes exist for the length of the button press: nothing is cached,
+queued, or written to phone storage, and the object URL is released behind the download. Leave
+the page and it is gone. Press it again and you get a current copy with a new timestamp — so
+what you hand someone is always dated when you made it, never a stale file the app was sitting on.
+
+The PDF is written byte by byte in `index.html` using the two fonts every reader already has.
+There is no library and no CDN — same rule as the rest of the app, and it works in airplane mode.
 
 ### Header fields are typed, not read
 
@@ -67,7 +86,7 @@ starts collecting labeled samples the day a classifier pre-fills a cell.
 ```
 index.html          the whole app — CONFIG block at the top, logic below the line
 gradation.py        the calculation, in Python. THE TEST ORACLE — change math here first
-test/logic.test.mjs 53 tests; lifts the functions out of index.html, compares to gradation.py
+test/logic.test.mjs 81 tests; lifts the functions out of index.html, compares to gradation.py
 tools/make-icons.py regenerates the PWA icons
 manifest.json       home-screen install
 sw.js               offline shell cache — BUMP THE CACHE NAME ON EVERY DEPLOY
@@ -91,7 +110,7 @@ what else moved.
 ## Tests
 
 ```
-npm test            # 53 tests, no dependencies
+npm test            # 81 tests, no dependencies
 python3 gradation.py   # print the oracle's table for the verified sheet
 ```
 

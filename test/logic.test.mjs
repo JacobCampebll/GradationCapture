@@ -24,11 +24,18 @@ async function loadClientLogic() {
     return m[0];
   };
 
+  const grabConst = (name) => {
+    const m = js.match(new RegExp(`\\nconst ${name} = \\[[\\s\\S]*?\\n\\];`));
+    if (!m) throw new Error(`index.html no longer defines const ${name} — update this test`);
+    return m[0];
+  };
+
   const names = ["num", "round1", "calcSample", "sampleChecks", "sampleHasData",
-    "csvCell", "fmt", "buildCSV", "buildTSV"];
-  const src = [js.match(/const CONFIG = \{[\s\S]*?\n\};/)[0]]
+    "csvCell", "fmt", "buildCSV", "buildTSV",
+    "pdfEsc", "pdfWidth", "pdfBuilder", "pdfDate", "stampText", "buildPDFReport"];
+  const src = [js.match(/const CONFIG = \{[\s\S]*?\n\};/)[0], grabConst("HELV_W")]
     .concat(names.map(grab))
-    .concat(`export { CONFIG, ${names.join(", ")} };`)
+    .concat(`export { CONFIG, HELV_W, ${names.join(", ")} };`)
     .join("\n");
 
   return import("data:text/javascript," + encodeURIComponent(src));
@@ -345,6 +352,247 @@ describe("buildTSV — the paste-into-a-spreadsheet path", () => {
   });
 });
 
+/* ================= PDF ================= */
+// The PDF is written byte by byte in index.html, so these tests read the bytes back
+// the way a PDF reader would: check the structure, then check the numbers landed.
+const latin1 = (bytes) => Buffer.from(bytes).toString("latin1");
+const AT = new Date(2026, 7, 13, 14, 32, 5); // 13 Aug 2026, 2:32:05pm local
+
+function makePDF(samples, photo, when) {
+  return app.buildPDFReport({ date: "2026-08-13", county: "Fayette", projectNo: "191009" },
+    samples || [fixtureSample(), { fields: {}, grams: {} }, { fields: {}, grams: {} }],
+    when || AT, photo || null);
+}
+
+describe("buildPDFReport — structure a reader will accept", () => {
+  const bytes = makePDF();
+  const s = latin1(bytes);
+
+  test("it is a PDF, header to trailer", () => {
+    assert.ok(bytes instanceof Uint8Array);
+    assert.ok(s.startsWith("%PDF-1.4\n"));
+    assert.ok(s.trimEnd().endsWith("%%EOF"));
+    assert.ok(bytes.length > 2000, "suspiciously small for a full worksheet");
+  });
+
+  test("every xref offset points at the object it claims", () => {
+    const startxref = parseInt(s.slice(s.lastIndexOf("startxref") + 9).trim(), 10);
+    assert.equal(s.slice(startxref, startxref + 4), "xref");
+    const header = s.slice(startxref).match(/xref\n0 (\d+)\n/);
+    const size = parseInt(header[1], 10);
+    // Entries are exactly 20 bytes each and start with object 0's free entry.
+    const body = s.slice(startxref + header[0].length);
+    for (let i = 1; i < size; i++) {
+      const off = parseInt(body.slice(i * 20, i * 20 + 10), 10);
+      assert.equal(s.slice(off, off + String(i).length + 6), `${i} 0 obj`,
+        `xref entry ${i} does not point at object ${i}`);
+    }
+  });
+
+  test("the object count in the trailer matches the xref", () => {
+    const size = parseInt(s.match(/\/Size (\d+)/)[1], 10);
+    assert.equal(s.match(/xref\n0 (\d+)\n/)[1], String(size));
+    assert.equal((s.match(/\n\d+ 0 obj\n/g) || []).length, size - 1);
+  });
+
+  test("declared stream lengths match the bytes actually written", () => {
+    const re = /<< \/Length (\d+) >>\nstream\n/g;
+    let m, checked = 0;
+    while ((m = re.exec(s))) {
+      const start = m.index + m[0].length;
+      assert.equal(s.slice(start + Number(m[1]), start + Number(m[1]) + 10), "\nendstream",
+        "a content stream's /Length is wrong");
+      checked++;
+    }
+    assert.ok(checked >= 1);
+  });
+
+  test("both standard fonts are declared with WinAnsi encoding", () => {
+    assert.ok(s.includes("/BaseFont /Helvetica /Encoding /WinAnsiEncoding"));
+    assert.ok(s.includes("/BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding"));
+  });
+});
+
+describe("buildPDFReport — the worksheet actually reaches the page", () => {
+  const s = latin1(makePDF());
+
+  test("the form's own title and the sheet info are on it", () => {
+    assert.ok(s.includes("KENTUCKY TRANSPORTATION CABINET"));
+    assert.ok(s.includes("WORKSHEET FOR BITUMINOUS MIXTURES"));
+    assert.ok(s.includes("(191009)"));
+    assert.ok(s.includes("(Fayette)"));
+  });
+
+  test("every sieve label and both percentages are printed", () => {
+    EXPECTED.forEach(([label, , pctRet, pctPass]) => {
+      assert.ok(s.includes("(" + app.pdfEsc(label) + ")"), `missing sieve label: ${label}`);
+      assert.ok(s.includes(`(${pctRet.toFixed(1)})`), `missing % retained: ${pctRet}`);
+      assert.ok(s.includes(`(${pctPass.toFixed(1)})`), `missing % passing: ${pctPass}`);
+    });
+  });
+
+  test("the struck 6mm row is carried through so the page matches the paper", () => {
+    assert.ok(s.includes("(6mm \\(1/4\"\\))"));
+  });
+
+  test("PAN, TOTAL and the loss verdict are printed", () => {
+    assert.ok(s.includes("(1443.6)"));
+    assert.ok(s.includes("(1447.0)"));
+    assert.ok(s.includes("(3.4 g)"));
+    assert.ok(s.includes("(0.23%)"));
+    assert.ok(s.includes("(OK)"));
+  });
+
+  test("a failing sheet prints FAIL and the reason, not a quiet blank", () => {
+    const f = latin1(makePDF([fixtureSample({ fields: { pan: "1400.0" } })]));
+    assert.ok(f.includes("(FAIL)"));
+    assert.ok(!f.includes("(OK)"));
+    assert.ok(/FLAGGED: Aggregate loss/.test(f));
+  });
+
+  test("empty sample columns never reach the page", () => {
+    assert.ok(s.includes("(SAMPLE 1)"));
+    assert.ok(!s.includes("(SAMPLE 2)"));
+  });
+
+  test("a second keyed sample does reach the page", () => {
+    const two = latin1(makePDF([fixtureSample(),
+      fixtureSample({ fields: { label: "KYTC slab 2" } }), { fields: {}, grams: {} }]));
+    assert.ok(two.includes("(SAMPLE 2)"));
+    assert.ok(two.includes("(KYTC slab 2)"));
+  });
+
+  test("every page is numbered n of N", () => {
+    const total = parseInt(s.match(/\/Count (\d+)/)[1], 10);
+    for (let n = 1; n <= total; n++) {
+      assert.ok(s.includes(`(Page ${n} of ${total})`), `page ${n} is not stamped`);
+    }
+  });
+});
+
+describe("buildPDFReport — nothing collides with the footer", () => {
+  // Pull every text baseline out of the content streams. PDF y grows upward, so a
+  // smaller y sits lower on the page.
+  function baselines(pdfString) {
+    const out = [];
+    const re = /1 0 0 1 ([\d.]+) ([\d.]+) Tm \(((?:\\.|[^\\)])*)\) Tj/g;
+    let m;
+    while ((m = re.exec(pdfString))) out.push({ x: +m[1], y: +m[2], text: m[3] });
+    return out;
+  }
+
+  const floor = CONFIG.pdf.margin + CONFIG.pdf.footerH; // top of the footer band, in PDF y
+
+  test("only the footer itself is drawn in the footer band", () => {
+    const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]);
+    [makePDF(), makePDF(null, { bytes: jpeg, width: 1200, height: 1600 }),
+      makePDF([fixtureSample(), fixtureSample({ fields: { label: "two" } }),
+        fixtureSample({ fields: { label: "three" } })])].forEach((bytes, i) => {
+      baselines(latin1(bytes))
+        .filter((t) => t.y < floor)
+        .forEach((t) => assert.ok(/^Generated |^Page \d+ of \d+$/.test(t.text),
+          `case ${i}: "${t.text}" is laid into the footer band`));
+    });
+  });
+
+  test("nothing is drawn off the bottom or past the right edge of the page", () => {
+    baselines(latin1(makePDF())).forEach((t) => {
+      assert.ok(t.y >= CONFIG.pdf.margin - 6, `"${t.text}" runs off the bottom`);
+      assert.ok(t.x >= 0 && t.x <= CONFIG.pdf.pageW, `"${t.text}" runs off the side`);
+    });
+  });
+
+  test("a third sample overflows onto a second page rather than off the first", () => {
+    const three = makePDF([fixtureSample(),
+      fixtureSample({ fields: { label: "two" } }),
+      fixtureSample({ fields: { label: "three" } })]);
+    assert.ok(parseInt(latin1(three).match(/\/Count (\d+)/)[1], 10) >= 2);
+  });
+});
+
+describe("buildPDFReport — stamped with the moment it was made", () => {
+  test("the visible stamp and the PDF metadata carry the generation time", () => {
+    const s = latin1(makePDF(null, null, AT));
+    assert.ok(s.includes("/CreationDate (D:20260813143205"), "PDF metadata is not stamped");
+    assert.ok(s.includes("(Generated " + app.pdfEsc(app.stampText(AT)) + ")"),
+      "the page does not show when it was generated");
+  });
+
+  test("generating again later produces a differently stamped file", () => {
+    const later = new Date(2026, 7, 13, 16, 5, 0);
+    const a = latin1(makePDF(null, null, AT));
+    const b = latin1(makePDF(null, null, later));
+    assert.notEqual(a, b, "the PDF must reflect when it was made, not be a fixed artifact");
+    assert.ok(b.includes("/CreationDate (D:20260813160500"));
+    assert.ok(!b.includes("/CreationDate (D:20260813143205"));
+  });
+
+  test("pdfDate formats an offset the way the spec wants", () => {
+    assert.match(app.pdfDate(AT), /^D:20260813143205[+-]\d{2}'\d{2}'$/);
+  });
+});
+
+describe("buildPDFReport — the photo rides along", () => {
+  // A 1x1 JPEG is enough: what matters is that the bytes are embedded verbatim.
+  const jpeg = Uint8Array.from(Buffer.from(
+    "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a" +
+    "HBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAA" +
+    "AAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==", "base64"));
+  const photo = { bytes: jpeg, width: 1200, height: 1600 };
+  const s = latin1(makePDF(null, photo));
+
+  test("it is embedded as a JPEG rather than re-encoded", () => {
+    assert.ok(s.includes("/Filter /DCTDecode"));
+    assert.ok(s.includes("/Width 1200 /Height 1600"));
+    assert.ok(s.includes("/XObject << /Im1"));
+    assert.ok(s.includes(`/Length ${jpeg.length} >>\nstream\n`));
+  });
+
+  test("the original bytes survive byte for byte", () => {
+    const at = s.indexOf(`/Length ${jpeg.length} >>\nstream\n`) +
+      `/Length ${jpeg.length} >>\nstream\n`.length;
+    assert.equal(s.slice(at, at + jpeg.length), latin1(jpeg));
+  });
+
+  test("it lands on its own page, captioned", () => {
+    assert.ok(s.includes("(ORIGINAL WORKSHEET PHOTO)"));
+    const withPhoto = parseInt(s.match(/\/Count (\d+)/)[1], 10);
+    const without = parseInt(latin1(makePDF()).match(/\/Count (\d+)/)[1], 10);
+    assert.equal(withPhoto, without + 1);
+  });
+
+  test("no photo means no image object and no extra page", () => {
+    const none = latin1(makePDF());
+    assert.ok(!none.includes("/DCTDecode"));
+    assert.ok(!none.includes("ORIGINAL WORKSHEET PHOTO"));
+  });
+});
+
+describe("pdfEsc / pdfWidth — text that cannot corrupt the file", () => {
+  test("the three characters that would end a string early are escaped", () => {
+    assert.equal(app.pdfEsc("12.5mm (1/2\")"), "12.5mm \\(1/2\"\\)");
+    assert.equal(app.pdfEsc("a\\b"), "a\\\\b");
+  });
+
+  test("typographic characters fold into WinAnsi instead of breaking", () => {
+    assert.equal(app.pdfEsc("—"), String.fromCharCode(151));
+    assert.equal(app.pdfEsc("−"), "-");
+    assert.equal(app.pdfEsc("93.5°"), "93.5" + String.fromCharCode(176));
+  });
+
+  test("anything outside WinAnsi degrades to '?' rather than emitting a stray byte", () => {
+    const out = app.pdfEsc("東京 🙂");
+    assert.ok(!/[^\x00-\xff]/.test(out));
+    assert.ok(out.includes("?"));
+  });
+
+  test("the width table covers printable ASCII and measures digits at 556", () => {
+    assert.equal(app.HELV_W.length, 95);
+    assert.equal(app.pdfWidth("00000", 10), 27.8);
+    assert.ok(app.pdfWidth("1447.0", 9) > app.pdfWidth("14.0", 9), "right-alignment depends on this");
+  });
+});
+
 /* ================= guardrails against silent regressions ================= */
 describe("config guardrails", () => {
   test("all 120 Kentucky counties are in the dropdown, with no duplicates", () => {
@@ -377,6 +625,15 @@ describe("config guardrails", () => {
 
   test("the form holds three gradation columns", () => {
     assert.equal(CONFIG.sampleCount, 3);
+  });
+
+  test("the PDF is never persisted — it exists only for the download", () => {
+    const html = readFileSync(join(root, "index.html"), "utf8");
+    const snapshot = html.match(/\nfunction snapshot\(\)[\s\S]*?\n\}\n/)[0];
+    assert.ok(!/pdf/i.test(snapshot), "snapshot() must not carry the PDF into storage");
+    const setItems = html.match(/localStorage\.setItem\([^)]*\)/g) || [];
+    setItems.forEach((c) => assert.ok(!/pdf/i.test(c), `PDF data written to storage: ${c}`));
+    assert.ok(/URL\.revokeObjectURL/.test(html), "the object URL must be revoked after download");
   });
 
   test("no credential has leaked into the page", () => {
