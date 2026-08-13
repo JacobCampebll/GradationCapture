@@ -374,6 +374,11 @@ def evaluate(net, x, y, rng=None, batch=1000):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true", help="gradient check and exit")
+    ap.add_argument("--real", default=None,
+                    help="path to real-digits.json harvested from the photo corpus; "
+                         "mixes the lab's own handwriting into every epoch")
+    ap.add_argument("--real-weight", type=int, default=40,
+                    help="how many times each real glyph appears per epoch")
     ap.add_argument("--epochs", type=int, default=8)
     ap.add_argument("--batch", type=int, default=128)
     ap.add_argument("--lr", type=float, default=2e-3)
@@ -391,18 +396,37 @@ def main():
     rng = np.random.default_rng(SEED)
     net = Net(rng)
 
+    real_x = real_y = None
+    if args.real:
+        with open(args.real) as f:
+            real = json.load(f)["samples"]
+        real_x = np.array([np.array(s["px"], np.float32).reshape(28, 28) / 255.0
+                           for s in real])
+        real_y = np.array([s["label"] for s in real], np.int64)
+        print(f"mixing in {len(real_x)} real glyphs x{args.real_weight} per epoch "
+              f"({len(real_x) * args.real_weight} of {len(x)} samples)")
+
     state = {}
     for obj, pname, gname in net.params():
         state[id(getattr(obj, pname))] = [np.zeros_like(getattr(obj, pname)),
                                           np.zeros_like(getattr(obj, pname))]
     step = 0
     for epoch in range(args.epochs):
-        order = rng.permutation(len(x))
+        if real_x is not None:
+            # Real glyphs ride along in every epoch, heavily oversampled and
+            # augmented like everything else. MNIST keeps the net general;
+            # the real samples teach it this lab's pens and habits.
+            reps = np.tile(np.arange(len(real_x)), args.real_weight)
+            ex = np.concatenate([x, real_x[reps]])
+            ey = np.concatenate([y, real_y[reps]])
+        else:
+            ex, ey = x, y
+        order = rng.permutation(len(ex))
         total = 0.0
         for bi in range(0, len(order), args.batch):
             idx = order[bi:bi + args.batch]
-            xb = augment(x[idx], rng)
-            yb = y[idx]
+            xb = augment(ex[idx], rng)
+            yb = ey[idx]
             loss, dl, _ = softmax_ce(net.forward(xb), yb)
             net.backward(dl)
             step += 1
@@ -423,6 +447,9 @@ def main():
     clean = evaluate(net, xt, yt)
     aug = evaluate(net, xt, yt, rng=np.random.default_rng(99))
     print(f"\nfinal: clean {clean * 100:.2f}%   augmented {aug * 100:.2f}%")
+    if real_x is not None:
+        racc = evaluate(net, real_x, real_y)
+        print(f"real handwriting (train set, optimistic): {racc * 100:.2f}%")
     export(net, xt, yt, args.epochs, clean, aug)
     return 0
 

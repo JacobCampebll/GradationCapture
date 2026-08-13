@@ -11,6 +11,7 @@
     "digits": "python3 tools/train_digits.py",
     "seg": "node tools/eval-segmentation.mjs",
     "read": "node tools/eval-reading.mjs",
+    "harvest": "node tools/harvest-digits.mjs",
     "dev": "netlify dev",
     "deploy": "netlify deploy",
     "deploy:prod": "netlify deploy --prod"

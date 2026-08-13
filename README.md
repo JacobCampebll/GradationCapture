@@ -153,7 +153,15 @@ npm test            # 128 tests, no dependencies
 python3 gradation.py            # print the oracle's table for the verified sheet
 python3 tools/train_digits.py --check   # gradient-check the trainer, ~10 seconds
 python3 tools/train_digits.py           # retrain the classifier and rewrite model.js
+npm run read                            # score the reader against every known photo
+npm run harvest                         # relabel digit glyphs from the photo corpus
+python3 tools/train_digits.py --real test/fixtures/real-digits.json   # fine-tune on them
 ```
+
+The fine-tuning loop is how the reader gets better: add photos of completed sheets to
+test/fixtures/photos, add their true values to the tables in tools/eval-reading.mjs and
+tools/harvest-digits.mjs, then harvest and retrain. Every new sheet teaches it this lab's
+handwriting.
 
 The trainer gradient-checks itself before it will train, in float64 with a small epsilon —
 ReLU and max-pool are piecewise linear, so a large step straddles a kink and reports a huge

@@ -1769,50 +1769,151 @@ function connectedComponents(mask, w, h) {
   return list;
 }
 
+/* Two components belong to the same digit when their x-ranges overlap — a rule
+   through a glyph leaves a top half and a bottom half stacked, not side by side. */
+function mergeByOverlap(parts) {
+  let merged = true;
+  while (merged) {
+    merged = false;
+    for (let i = 0; i < parts.length && !merged; i++) {
+      for (let j = i + 1; j < parts.length; j++) {
+        const a = parts[i], b = parts[j];
+        const overlap = Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX) + 1;
+        if (overlap >= 0.45 * Math.min(a.w, b.w)) {
+          parts[i] = { minX: Math.min(a.minX, b.minX), maxX: Math.max(a.maxX, b.maxX),
+            minY: Math.min(a.minY, b.minY), maxY: Math.max(a.maxY, b.maxY),
+            n: a.n + b.n, w: 0, h: 0 };
+          parts[i].w = parts[i].maxX - parts[i].minX + 1;
+          parts[i].h = parts[i].maxY - parts[i].minY + 1;
+          parts.splice(j, 1);
+          merged = true;
+          break;
+        }
+      }
+    }
+  }
+  return parts;
+}
+
 /* One cell of the grams column -> the digits written in it.
 
+   The old version cleared a fat border and demanded every component fit rigid
+   size rules — but lab handwriting rides the printed lines, so clearing the
+   border chopped digits and the fragments failed the filters. That is why the
+   app read "88.8" where the sheet said "874.8": it threw most digits away
+   before the classifier ever saw them. This version removes the printed rules
+   surgically, re-merges what they cut, and adapts the ink threshold to how
+   faint the pencil actually is.
+
    The decimal point is never recognised. Every value in this column has exactly
-   one decimal place, so the point is filtered out as a component and inserted
-   before the last digit — an entire class of error that simply cannot happen. */
+   one decimal place, so the point is dropped as a small component and inserted
+   before the last digit — an entire class of error that cannot happen. */
 function readCell(gray, gw, gh, cell, layers) {
-  const cw = cell.w, ch = cell.h;
-  if (cw < 6 || ch < 6) return { digits: [], text: "" };
+  // A generous crop: handwriting overflows the printed cell in every direction.
+  // Little extra to the left, though — the sieve labels are printed right there.
+  const padL = Math.round(cell.w * 0.06);
+  const padR = Math.round(cell.w * 0.30);
+  const padY = Math.round(cell.h * 0.24);
+  const x0 = Math.max(0, cell.x - padL);
+  const y0 = Math.max(0, cell.y - padY);
+  const cw = Math.min(gw - x0, cell.w + padL + padR);
+  const ch = Math.min(gh - y0, cell.h + padY * 2);
+  if (cw < 6 || ch < 6) return { digits: [], text: "", lines: [] };
+
   const sub = new Float32Array(cw * ch);
   for (let y = 0; y < ch; y++) {
-    for (let x = 0; x < cw; x++) {
-      const sx = cell.x + x, sy = cell.y + y;
-      sub[y * cw + x] = (sx >= 0 && sy >= 0 && sx < gw && sy < gh) ? gray[sy * gw + sx] : 1;
-    }
-  }
-  const mask = inkMask(sub, cw, ch, 0.12, Math.max(4, Math.round(ch / 2)));
-
-  // Clear a margin. The printed rules sit just inside the cell and were being
-  // read as a leading digit.
-  const bx = Math.max(2, Math.round(cw * 0.06));
-  const by = Math.max(2, Math.round(ch * 0.10));
-  for (let y = 0; y < ch; y++) {
-    for (let x = 0; x < cw; x++) {
-      if (x < bx || x >= cw - bx || y < by || y >= ch - by) mask[y * cw + x] = 0;
-    }
+    for (let x = 0; x < cw; x++) sub[y * cw + x] = gray[(y0 + y) * gw + (x0 + x)];
   }
 
-  const parts = connectedComponents(mask, cw, ch).filter((k) =>
-    k.n >= Math.max(4, cw * ch * 0.004) &&
-    k.h >= ch * 0.22 &&        // the decimal point and speckle fall out here
-    k.h <= ch * 0.95 &&        // spans the cell, so it is a rule not a digit
-    !(k.w <= 2 && k.h > ch * 0.4) &&
-    k.w <= cw * 0.6);
+  // Darkness relative to the local background, thresholded off the darkest
+  // stroke actually present. A fixed cut-off tuned on ballpoint loses faint
+  // pencil entirely, and most of these sheets are pencil.
+  const bg = boxBlur(sub, cw, ch, Math.max(4, Math.round(ch / 2)));
+  const dark = new Float32Array(cw * ch);
+  let peak = 0;
+  for (let i = 0; i < dark.length; i++) {
+    dark[i] = Math.max(0, bg[i] - sub[i]);
+    if (dark[i] > peak) peak = dark[i];
+  }
+  if (peak < 0.06) return { digits: [], text: "", lines: [] };  // an empty cell
+  const thresh = Math.max(0.045, peak * 0.35);
+  const mask = new Uint8Array(cw * ch);
+  for (let i = 0; i < mask.length; i++) mask[i] = dark[i] >= thresh ? 1 : 0;
+
+  // Remove the printed rules by what they are — long straight runs — rather
+  // than by row density. A rule tilted half a degree never fills 55% of any
+  // one pixel row, so the density test missed it; the handwriting touches the
+  // rule; and the entire number fused with the line under it into a single
+  // 130px-wide component that got classified as one "digit". Run length is
+  // orientation-proof: rule segments stay long in each pixel row, and no
+  // stroke of a real digit runs this long.
+  const hRules = openRuns(mask, cw, ch, Math.max(18, Math.round(cw * 0.18)), true, 1);
+  const vRules = openRuns(mask, cw, ch, Math.max(14, Math.round(ch * 0.50)), false, 1);
+  for (let i = 0; i < mask.length; i++) {
+    if (hRules[i] || vRules[i]) mask[i] = 0;
+  }
+
+  let parts = connectedComponents(mask, cw, ch)
+    .filter((k) => k.n >= 4 && !(k.w > k.h * 3 && k.h <= 3)); // dashes and residue of rules
+  parts = mergeByOverlap(parts);
+  if (!parts.length) return { digits: [], text: "", lines: [] };
+
+  // The padded crop usually holds writing from the rows above and below as
+  // well — lab handwriting is taller than the printed rows. Cluster the
+  // components into text lines by their vertical centres; which line belongs
+  // to this row is decided by the caller, who knows the whole sheet's offset.
+  parts.forEach((k) => { k.cy = (k.minY + k.maxY) / 2; });
+  parts.sort((a, b) => a.cy - b.cy);
+  let tallest = 0;
+  parts.forEach((k) => { if (k.h > tallest) tallest = k.h; });
+  const lines = [];
+  parts.forEach((k) => {
+    const line = lines[lines.length - 1];
+    if (line && Math.abs(k.cy - line.cy) < Math.max(6, tallest * 0.55)) {
+      line.parts.push(k);
+      line.cy = line.parts.reduce((s, p) => s + p.cy, 0) / line.parts.length;
+    } else {
+      lines.push({ cy: k.cy, parts: [k] });
+    }
+  });
+  const mid = ch / 2 + (cell.yOffset || 0);
+  const band = cell.h * 0.45;
+  const usable = lines.filter((l) => Math.abs(l.cy - mid) <= band &&
+    l.parts.some((p) => p.h >= ch * 0.15));
+  if (!usable.length) return { digits: [], text: "", lines: lines.map((l) => l.cy - ch / 2) };
+  usable.sort((a, b) => {
+    // nearest the corrected centre wins; ink mass breaks near-ties, so a full
+    // number beats a stray fragment that happens to sit slightly closer
+    const da = Math.abs(a.cy - mid) - a.parts.length * 1.5;
+    const db = Math.abs(b.cy - mid) - b.parts.length * 1.5;
+    return da - db;
+  });
+  parts = usable[0].parts;
+
+  // Size gates relative to the writing itself, not the cell: the tallest
+  // component on the line is a digit, the decimal point is far shorter.
+  let maxH = 0;
+  parts.forEach((k) => { if (k.h > maxH) maxH = k.h; });
+  if (maxH < ch * 0.15) return { digits: [], text: "", lines: lines.map((l) => l.cy - ch / 2) };
+  parts = parts.filter((k) => k.h >= maxH * 0.45 && k.n >= 5 && k.w <= cw * 0.6);
   parts.sort((a, b) => a.minX - b.minX);
+  if (parts.length > 5) {
+    // A grams value is at most five digits. Keep the five biggest and stay
+    // suspicious rather than refuse — the solver and the tech both see flags.
+    parts.sort((a, b) => b.n - a.n);
+    parts = parts.slice(0, 5).sort((a, b) => a.minX - b.minX);
+  }
 
-  const digits = parts.map((k) => {
+  const glyphPx = parts.map((k) => {
     const glyph = new Float32Array(k.w * k.h);
     for (let y = 0; y < k.h; y++) {
       for (let x = 0; x < k.w; x++) {
         glyph[y * k.w + x] = mask[(k.minY + y) * cw + (k.minX + x)] ? 1 : 0;
       }
     }
-    return classifyGlyph(prepareGlyph(glyph, k.w, k.h), layers);
+    return prepareGlyph(glyph, k.w, k.h);
   });
+  const digits = glyphPx.map((px) => classifyGlyph(px, layers));
 
   const text = digits.map((d) => d.digit).join("");
   return {
@@ -1820,6 +1921,8 @@ function readCell(gray, gw, gh, cell, layers) {
     text: text.length > 1 ? text.slice(0, -1) + "." + text.slice(-1)
       : (text ? "0." + text : ""),
     confidence: digits.length ? digits.reduce((m, d) => Math.min(m, d.confidence), 1) : 0,
+    lines: lines.map((l) => l.cy - ch / 2),
+    glyphPx: glyphPx,
   };
 }
 
@@ -1881,9 +1984,29 @@ function readSheet(rgba, w, h, sampleIndex) {
   if (turn) { const r = rotate90(g, gw, gh, turn); g = r.gray; gw = r.w; gh = r.h; }
 
   const cells = snappedCells(snap, CONFIG.sieves);
+
+  // The ladder lands close but often sits a consistent fraction of a row off —
+  // the writing rides the printed lines, not the middles of the cells. Probe
+  // every cell for where its text lines actually sit, take the median offset
+  // across the sheet, and read again corrected. Per-cell correction cannot do
+  // this: a blank row would happily adopt its neighbour's writing.
+  const deltas = [];
+  cells.forEach((cell) => {
+    if (cell.skip) return;
+    const probe = readCell(g, gw, gh, cell, layers);
+    (probe.lines || []).forEach((d) => {
+      if (Math.abs(d) <= cell.h * 0.9) deltas.push(d);
+    });
+  });
+  let yOffset = 0;
+  if (deltas.length >= 3) {
+    deltas.sort((a, b) => a - b);
+    yOffset = deltas[deltas.length >> 1];
+  }
+
   const results = cells.map((cell) => {
     if (cell.skip) return { key: cell.key, text: "", confidence: 0, skip: true };
-    const read = readCell(g, gw, gh, cell, layers);
+    const read = readCell(g, gw, gh, Object.assign({ yOffset: yOffset }, cell), layers);
     return { key: cell.key, text: read.text, confidence: read.confidence,
       digits: read.digits, digitCount: read.digits.length };
   });
