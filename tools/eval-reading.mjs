@@ -1,14 +1,19 @@
 import { chromium } from '/opt/node22/lib/node_modules/playwright/index.mjs';
 const SP='/tmp/claude-0/-home-user-GradationCapture/e8211451-920c-5fba-b104-722d7d1142d9/scratchpad';
-const TRUTH=['','','','53.0','145.4','','555.1','874.8','1079.1','1200.6','1273.0','1315.0','1342.2','1475.5','1476.6'];
-const TRY=['slab2-01','slab2-00','slab2-06','slab2-07','slab2-flat2','slab2-12'];
+const SLAB1=['','','','139.4','273.9','','624.7','884.6','1041.4','1147.8','1267.6','1329.0','1352.6','1443.6','1447.0'];
+const SLAB2=['','','','53.0','145.4','','555.1','874.8','1079.1','1200.6','1273.0','1315.0','1342.2','1475.5','1476.6'];
+const TRUTHS={};
+['slab1-rot90','slab1-tilted'].forEach(n=>TRUTHS[n]=SLAB1);
+['slab2-02','slab2-03','slab2-04','slab2-05','slab2-06','slab2-07','slab2-08','slab2-09','slab2-10','slab2-11','slab2-12','slab2-13','slab2-flat1'].forEach(n=>TRUTHS[n]=SLAB2);
+const TRUTH=SLAB2;
+const TRY=(process.argv[2]||Object.keys(TRUTHS).join(',')).split(',');
 const browser=await chromium.launch();
 const page=await browser.newPage({viewport:{width:1500,height:1200}});
 page.on('pageerror',e=>console.log('PAGEERROR:',e.message));
 await page.goto('http://127.0.0.1:8412/index.html');
 await page.waitForSelector('#sieveBody tr');
 const res=await page.evaluate(async (args)=>{
-  const {TRY,TRUTH}=args;
+  const {TRY,TRUTHS}=args;
   const model=decodeModel(MODEL_WEIGHTS_B64,MODEL_META);
   const out=[]; const panels=[];
 
@@ -35,7 +40,7 @@ const res=await page.evaluate(async (args)=>{
     return list;
   }
 
-  for(const name of TRY){
+  for(const name of TRY){ const TRUTH=TRUTHS[name]||[];
     const img=new Image();
     await new Promise((r,j)=>{img.onload=r;img.onerror=j;img.src=`test/fixtures/photos/${name}.jpg`;});
     const W=1600,H=Math.round(img.naturalHeight*W/img.naturalWidth);
@@ -45,9 +50,18 @@ const res=await page.evaluate(async (args)=>{
     if(!flat){out.push({name,err:'no page'});continue;}
     let g=flat.gray,gw=flat.w,gh=flat.h;
     if(gh>gw){const r=rotate90(g,gw,gh,1);g=r.gray;gw=r.w;gh=r.h;}
+    // choose upright vs upside-down by which puts the printed sieve labels on the left
+    let bestTurn=0,bestScore=-Infinity,snap=null;
+    for(const t of [0,2]){
+      const r=rotate90(g,gw,gh,t);
+      const sn=snapTemplate(r.gray,r.w,r.h,0,CONFIG.sieves);
+      const sc=uprightScore(sn,r.w,r.h);
+      if(sc>bestScore){bestScore=sc;bestTurn=t;snap=sn;}
+    }
+    if(bestTurn){const r=rotate90(g,gw,gh,bestTurn);g=r.gray;gw=r.w;gh=r.h;}
 
     const reads=[];
-    const cells=templateCells(gw,gh,0,CONFIG.sieves);
+    const cells=snappedCells(snap,CONFIG.sieves);
     const strip=document.createElement('canvas');strip.width=260;strip.height=cells.length*34+30;
     const so=strip.getContext('2d');so.fillStyle='#fff';so.fillRect(0,0,strip.width,strip.height);
     so.fillStyle='#000';so.font='bold 14px sans-serif';so.fillText(name,4,16);
@@ -59,10 +73,16 @@ const res=await page.evaluate(async (args)=>{
         sub[y*cw+x]=(sx>=0&&sy>=0&&sx<gw&&sy<gh)?g[sy*gw+sx]:1;
       }
       const m=inkMask(sub,cw,ch,0.12,Math.max(4,Math.round(ch/2)));
-      // drop anything touching the border (grid rules)
-      for(let x=0;x<cw;x++){m[x]=0;m[(ch-1)*cw+x]=0;}
-      for(let y=0;y<ch;y++){m[y*cw]=0;m[y*cw+cw-1]=0;}
-      const cs=comps(m,cw,ch).filter(k=>k.n>=Math.max(4,cw*ch*0.004)&&k.h>=ch*0.25);
+      // clear a margin: the printed rules are 2-3px thick and sit just inside
+      const bx=Math.max(2,Math.round(cw*0.06)),by=Math.max(2,Math.round(ch*0.10));
+      for(let y=0;y<ch;y++)for(let x=0;x<cw;x++)
+        if(x<bx||x>=cw-bx||y<by||y>=ch-by) m[y*cw+x]=0;
+      const cs=comps(m,cw,ch).filter(k=>
+        k.n>=Math.max(4,cw*ch*0.004) &&
+        k.h>=ch*0.22 &&
+        k.h<=ch*0.95 &&            // spans the cell => it is a rule, not a digit
+        !(k.w<=2&&k.h>ch*0.4) &&   // thin vertical line
+        k.w<=cw*0.6);              // absurdly wide blob
       cs.sort((a,b)=>a.minX-b.minX);
       let text='';
       const probsList=[];
@@ -89,13 +109,17 @@ const res=await page.evaluate(async (args)=>{
     });
     panels.push(strip);
     const hits=reads.filter((r,i)=>TRUTH[i]&&r.text===TRUTH[i]).length;
+    let dOK=0,dTot=0;
+    TRUTH.forEach((t,i)=>{ if(!t)return; const got=(reads[i]&&reads[i].text)||'';
+      const a=t.replace('.',''),b=got.replace('.','');
+      for(let k=0;k<a.length;k++){dTot++; if(b.length===a.length&&b[k]===a[k])dOK++;} });
     const expected=TRUTH.filter(Boolean).length;
-    out.push({name,hits,expected,reads:reads.map(r=>r.text||'-').join(' ')});
+    out.push({name,hits,expected,dOK,dTot,turn:bestTurn*180,snap:Object.values(snap.snapped).filter(Boolean).length,reads:reads.map(r=>r.text||'-').join(' ')});
   }
   document.body.innerHTML='';document.body.style.cssText='background:#fff;margin:0';
   panels.forEach(p=>{p.style.cssText='display:inline-block;border:1px solid #999;margin:2px;vertical-align:top';document.body.appendChild(p);});
   return out;
-},{TRY,TRUTH});
-res.forEach(r=>console.log(r.err?`${r.name}: ${r.err}`:`${r.name}: ${r.hits}/${r.expected} exact | ${r.reads}`));
+},{TRY,TRUTHS});
+res.forEach(r=>console.log(r.err?`${r.name}: ${r.err}`:`${(r.name+'            ').slice(0,14)} ${r.hits}/${r.expected} cells  ${r.dOK}/${r.dTot} digits  snap=${r.snap}/4 | ${r.reads}`));
 await page.screenshot({path:SP+'/read.png',fullPage:true});
 await browser.close();

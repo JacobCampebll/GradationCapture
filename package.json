@@ -10,6 +10,7 @@
     "icons": "python3 tools/make-icons.py",
     "digits": "python3 tools/train_digits.py",
     "seg": "node tools/eval-segmentation.mjs",
+    "read": "node tools/eval-reading.mjs",
     "dev": "netlify dev",
     "deploy": "netlify deploy",
     "deploy:prod": "netlify deploy --prod"

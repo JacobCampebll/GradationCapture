@@ -1486,6 +1486,157 @@ function templateCells(w, h, sampleIndex, sieves) {
   return cells;
 }
 
+/* Fit the whole 16-line ladder to the rules that were actually found, rather
+   than snapping its two ends independently.
+
+   Snapping the ends is what produced reads that were correct but one or two
+   rows out: the top rule can be missed or the header rule caught instead, and
+   everything below inherits the error. Sliding a fixed-count, fixed-pitch
+   ladder over the detected peaks and keeping the position that explains the
+   most of them cannot go off by a row — a whole-row error would leave every
+   other line unexplained. */
+function fitRowGrid(peaks, wantTop, wantBottom, rowCount, window) {
+  const p0 = (wantBottom - wantTop) / rowCount;
+  const fallback = { top: wantTop, pitch: p0, hits: 0 };
+  if (!peaks.length) return fallback;
+
+  const tol = Math.max(2, p0 * 0.28);
+  let best = fallback;
+  const topStep = Math.max(1, p0 / 8);
+  for (let pitch = p0 * 0.86; pitch <= p0 * 1.14; pitch += p0 * 0.02) {
+    for (let top = wantTop - window; top <= wantTop + window; top += topStep) {
+      let hits = 0, err = 0;
+      for (let i = 0; i <= rowCount; i++) {
+        const want = top + i * pitch;
+        let bestD = tol;
+        for (let k = 0; k < peaks.length; k++) {
+          const d = Math.abs(peaks[k].pos - want);
+          if (d < bestD) bestD = d;
+        }
+        if (bestD < tol) { hits++; err += bestD; }
+      }
+      // Prefer more explained rules; break ties on how tightly they line up.
+      const score = hits - err / (tol * (rowCount + 1));
+      if (score > best.hits - 1e-9 && (hits > best.hits ||
+          (hits === best.hits && score > (best.score || -Infinity)))) {
+        best = { top: top, pitch: pitch, hits: hits, score: score };
+      }
+    }
+  }
+  return best.hits >= 6 ? best : fallback;
+}
+
+function nearestPeak(peaks, target, window) {
+  let best = null, bestD = window;
+  peaks.forEach((p) => {
+    const d = Math.abs(p.pos - target);
+    if (d <= bestD) { bestD = d; best = p.pos; }
+  });
+  return best;
+}
+
+function maskDensity(mask, w, h, x0, x1, y0, y1) {
+  let n = 0, total = 0;
+  for (let y = Math.max(0, y0 | 0); y < Math.min(h, y1 | 0); y++) {
+    for (let x = Math.max(0, x0 | 0); x < Math.min(w, x1 | 0); x++) { total++; n += mask[y * w + x]; }
+  }
+  return total ? n / total : 0;
+}
+
+/* The template says which column; this says exactly where.
+
+   The fractions are correct for the page they were measured on, but each
+   flattened photo differs by a percent or two because the detected quad takes
+   in slightly different amounts of the paper margin — and a couple of percent
+   is most of a column this narrow. So look for the printed rule near where the
+   template expects it and snap to that. Small search window, no ambiguity about
+   which rule is which. */
+function snapTemplate(gray, w, h, sampleIndex, sieves) {
+  const T = CONFIG.template;
+  const shift = T.sampleStep * (sampleIndex || 0);
+  const wantX0 = (T.gramsX0 + shift) * w;
+  const wantX1 = (T.gramsX1 + shift) * w;
+  const wantY0 = T.rowTop * h;
+  const wantY1 = T.rowBottom * h;
+  const winX = 0.035 * w;
+  const winY = 0.035 * h;
+
+  const mask = inkMask(gray, w, h, 0.08);
+
+  // Horizontal rules, looked for only in the band the table should occupy so
+  // the extraction-tests box underneath cannot contribute.
+  const band = { x0: 0, x1: w - 1, y0: wantY0 - winY * 1.6, y1: wantY1 + winY * 1.6 };
+  const hSrc = clipMaskTo(mask.slice(), w, h, band, 0);
+  const hMask = openRuns(hSrc, w, h, Math.round(w * 0.22), true, 3);
+  const rowPeaks = profilePeaks(profile(hMask, w, h, "rows"), 0.22, 4);
+  const y0 = nearestPeak(rowPeaks, wantY0, winY);
+  const y1 = nearestPeak(rowPeaks, wantY1, winY);
+
+  const fit = fitRowGrid(rowPeaks, wantY0, wantY1, T.rowCount, winY);
+  const top = fit.top;
+  const bottom = fit.top + fit.pitch * T.rowCount;
+
+  // Vertical rules, looked for only between those two lines.
+  const vSrc = clipMaskTo(mask.slice(), w, h, { x0: 0, x1: w - 1, y0: top, y1: bottom }, 0);
+  const vMask = openRuns(vSrc, w, h, Math.round((bottom - top) * 0.45), false, 3);
+  const colPeaks = profilePeaks(profile(vMask, w, h, "cols"), 0.22, 4);
+  const sx0 = nearestPeak(colPeaks, wantX0, winX);
+  const sx1 = nearestPeak(colPeaks, wantX1, winX);
+
+  let left = sx0 === null ? wantX0 : sx0;
+  let right = sx1 === null ? wantX1 : sx1;
+
+  // A snap that crosses over, or collapses the column to a slit, is worse than
+  // no snap at all — fall back to the template rather than emit a bad rectangle.
+  const wantW = wantX1 - wantX0;
+  if (right - left < wantW * 0.5 || right - left > wantW * 1.8) {
+    left = wantX0;
+    right = wantX1;
+  }
+
+  return {
+    x0: left, x1: right, y0: top, y1: bottom,
+    snapped: { x0: sx0 !== null, x1: sx1 !== null, y0: y0 !== null, y1: y1 !== null },
+    mask: mask,
+    colPeaks: colPeaks.map((p) => p.pos),
+    rowPeaks: rowPeaks.map((p) => p.pos),
+  };
+}
+
+/* Upright, or upside down and mirrored into looking upright?
+
+   The neighbour columns settle it. To the left of Grams Retained is the sieve
+   size column, which is full of printed labels on every sheet. To the right is
+   Percent Retained, which is always blank — that is what the app computes. Turn
+   the page 180 degrees and those two swap. */
+function uprightScore(snap, w, h) {
+  const cw = snap.x1 - snap.x0;
+  if (cw <= 2) return 0;
+  const leftInk = maskDensity(snap.mask, w, h, snap.x0 - cw * 1.4, snap.x0 - cw * 0.1, snap.y0, snap.y1);
+  const rightInk = maskDensity(snap.mask, w, h, snap.x1 + cw * 0.1, snap.x1 + cw * 1.4, snap.y0, snap.y1);
+  return leftInk - rightInk;
+}
+
+/* Cells from a snapped template. */
+function snappedCells(snap, sieves) {
+  const T = CONFIG.template;
+  const pitch = (snap.y1 - snap.y0) / T.rowCount;
+  const labels = sieves.map((s) => s.key).concat(["pan", "totalWt"]);
+  const inset = Math.max(1, Math.round(pitch * 0.12));
+  const cells = [];
+  for (let i = 0; i < T.rowCount; i++) {
+    cells.push({
+      key: labels[i],
+      skip: i < sieves.length ? !!sieves[i].skip : false,
+      x: Math.round(snap.x0 + inset),
+      y: Math.round(snap.y0 + i * pitch + inset),
+      w: Math.round(snap.x1 - snap.x0 - inset * 2),
+      h: Math.round(pitch - inset * 2),
+    });
+  }
+  return cells;
+}
+
 /* Upright or upside down? Both give a valid-looking grid — the table is
    symmetric — so geometry alone cannot separate 0 from 180 degrees. The form
    is not symmetric though: the SPECIFICATION column on the right is much wider
