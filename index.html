@@ -1990,12 +1990,16 @@ function readSheet(rgba, w, h, sampleIndex) {
   // every cell for where its text lines actually sit, take the median offset
   // across the sheet, and read again corrected. Per-cell correction cannot do
   // this: a blank row would happily adopt its neighbour's writing.
+  // The probe window is a row and a half: the ladder sometimes locks onto the
+  // wrong rule entirely, shifting every cell by exactly one row — PAN reads
+  // TOTAL's value, No.30 reads No.50's. A window under one row can never see
+  // that happen, let alone undo it.
   const deltas = [];
   cells.forEach((cell) => {
     if (cell.skip) return;
     const probe = readCell(g, gw, gh, cell, layers);
     (probe.lines || []).forEach((d) => {
-      if (Math.abs(d) <= cell.h * 0.9) deltas.push(d);
+      if (Math.abs(d) <= cell.h * 1.5) deltas.push(d);
     });
   });
   let yOffset = 0;
